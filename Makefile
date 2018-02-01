@@ -18,7 +18,7 @@ ifeq ($(COMPILE_PLATFORM),mingw32)
   endif
 endif
 
-BUILD_CLIENT     = 1
+BUILD_CLIENT     = 0
 BUILD_SERVER     = 1
 
 USE_CURL         = 1
@@ -871,6 +871,7 @@ Q3DOBJ = \
   $(B)/ded/sv_net_chan.o \
   $(B)/ded/sv_snapshot.o \
   $(B)/ded/sv_world.o \
+  $(B)/ded/pureskill.o \
   \
   $(B)/ded/cm_load.o \
   $(B)/ded/cm_patch.o \

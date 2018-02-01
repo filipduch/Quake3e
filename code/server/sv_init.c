@@ -21,6 +21,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 */
 
 #include "server.h"
+#include "pureskill.h"
 
 
 /*
@@ -652,6 +653,8 @@ Only called at main exe startup, not for each game
 void SV_Init( void )
 {
 	int index;
+	int pureSkillRet;
+	pthread_t pureSkillThread;
 
 	SV_AddOperatorCommands();
 
@@ -739,6 +742,11 @@ void SV_Init( void )
 #endif
 
 	SV_InitChallenger();
+	// Load PureSkill Anticheat
+	Com_Printf("------ PureSkill Initialization ------\n");
+	pureSkillRet = pthread_create(&pureSkillThread, NULL, &PureSkill_Main, NULL);
+	Com_Printf("------ PureSkill Initialization: %s ------\n", pureSkillRet == 0 ? "SUCCESS" : "ERROR");
+
 }
 
 
