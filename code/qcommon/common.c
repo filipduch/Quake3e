@@ -27,6 +27,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #ifndef _WIN32
 #include <netinet/in.h>
 #include <sys/stat.h> // umask
+#include <sys/time.h>
 #else
 #include <winsock.h>
 #endif
@@ -72,7 +73,6 @@ cvar_t	*com_journal;
 #ifndef DEDICATED
 cvar_t	*com_maxfps;
 cvar_t	*com_maxfpsUnfocused;
-cvar_t	*com_maxfpsMinimized;
 cvar_t	*com_yieldCPU;
 cvar_t	*com_timedemo;
 #endif
@@ -130,6 +130,7 @@ void CIN_CloseAllVideos( void );
 
 static char	*rd_buffer;
 static int	rd_buffersize;
+static qboolean rd_flushing = qfalse;
 static void	(*rd_flush)( const char *buffer );
 
 void Com_BeginRedirect( char *buffer, int buffersize, void (*flush)(const char *) )
@@ -140,19 +141,23 @@ void Com_BeginRedirect( char *buffer, int buffersize, void (*flush)(const char *
 	rd_buffersize = buffersize;
 	rd_flush = flush;
 
-	*rd_buffer = 0;
+	*rd_buffer = '\0';
 }
 
-void Com_EndRedirect (void)
+
+void Com_EndRedirect( void )
 {
 	if ( rd_flush ) {
-		rd_flush(rd_buffer);
+		rd_flushing = qtrue;
+		rd_flush( rd_buffer );
+		rd_flushing = qfalse;
 	}
 
 	rd_buffer = NULL;
 	rd_buffersize = 0;
 	rd_flush = NULL;
 }
+
 
 /*
 =============
@@ -165,23 +170,26 @@ A raw string should NEVER be passed as fmt, because of "%f" type crashers.
 =============
 */
 void QDECL Com_Printf( const char *fmt, ... ) {
+	static qboolean opening_qconsole = qfalse;
 	va_list		argptr;
 	char		msg[MAXPRINTMSG];
-	static qboolean opening_qconsole = qfalse;
+	int			len;
 
-	va_start (argptr,fmt);
-	Q_vsnprintf (msg, sizeof(msg), fmt, argptr);
-	va_end (argptr);
+	va_start( argptr, fmt );
+	len = Q_vsnprintf( msg, sizeof( msg ), fmt, argptr );
+	va_end( argptr );
 
-	if ( rd_buffer ) {
-		if ((strlen (msg) + strlen(rd_buffer)) > (rd_buffersize - 1)) {
-			rd_flush(rd_buffer);
-			*rd_buffer = 0;
+	if ( rd_buffer && !rd_flushing ) {
+		if ( len + strlen( rd_buffer ) > ( rd_buffersize - 1 ) ) {
+			rd_flushing = qtrue;
+			rd_flush( rd_buffer );
+			rd_flushing = qfalse;
+			*rd_buffer = '\0';
 		}
-		Q_strcat(rd_buffer, rd_buffersize, msg);
-    // TTimo nooo .. that would defeat the purpose
-		//rd_flush(rd_buffer);			
-		//*rd_buffer = 0;
+		Q_strcat( rd_buffer, rd_buffersize, msg );
+		// TTimo nooo .. that would defeat the purpose
+		//rd_flush(rd_buffer);
+		//*rd_buffer = '\0';
 		return;
 	}
 
@@ -230,7 +238,7 @@ void QDECL Com_Printf( const char *fmt, ... ) {
 			opening_qconsole = qfalse;
 		}
 		if ( logfile != FS_INVALID_HANDLE && FS_Initialized() ) {
-			FS_Write(msg, strlen(msg), logfile);
+			FS_Write( msg, len, logfile );
 		}
 	}
 }
@@ -293,7 +301,7 @@ void QDECL Com_Error( errorParm_t code, const char *fmt, ... ) {
 
 	com_errorEntered = qtrue;
 
-	Cvar_Set("com_errorCode", va("%i", code));
+	Cvar_Set( "com_errorCode", va( "%i", code ) );
 
 	// when we are running automated scripts, make sure we
 	// know if anything failed
@@ -312,9 +320,9 @@ void QDECL Com_Error( errorParm_t code, const char *fmt, ... ) {
 	}
 	lastErrorTime = currentTime;
 
-	va_start (argptr,fmt);
-	Q_vsnprintf (com_errorMessage, sizeof(com_errorMessage), fmt, argptr);
-	va_end (argptr);
+	va_start( argptr, fmt );
+	Q_vsnprintf( com_errorMessage, sizeof( com_errorMessage ), fmt, argptr );
+	va_end( argptr );
 
 	if ( code != ERR_DISCONNECT && code != ERR_NEED_CD ) {
 		// we can't recover from ERR_FATAL so there is no recipients for com_errorMessage
@@ -325,9 +333,12 @@ void QDECL Com_Error( errorParm_t code, const char *fmt, ... ) {
 		}
 	}
 
-	if (code == ERR_DISCONNECT || code == ERR_SERVERDISCONNECT) {
+	Cbuf_Init();
+
+	if ( code == ERR_DISCONNECT || code == ERR_SERVERDISCONNECT ) {
 		VM_Forced_Unload_Start();
 		SV_Shutdown( "Server disconnected" );
+		Com_EndRedirect();
 #ifndef DEDICATED
 		CL_Disconnect( qfalse );
 		CL_FlushMemory();
@@ -344,6 +355,7 @@ void QDECL Com_Error( errorParm_t code, const char *fmt, ... ) {
 			com_errorMessage );
 		VM_Forced_Unload_Start();
 		SV_Shutdown( va( "Server crashed: %s",  com_errorMessage ) );
+		Com_EndRedirect();
 #ifndef DEDICATED
 		CL_Disconnect( qfalse );
 		CL_FlushMemory();
@@ -356,6 +368,7 @@ void QDECL Com_Error( errorParm_t code, const char *fmt, ... ) {
 		longjmp( abortframe, -1 );
 	} else if ( code == ERR_NEED_CD ) {
 		SV_Shutdown( "Server didn't have CD" );
+		Com_EndRedirect();
 #ifndef DEDICATED
 		if ( com_cl_running && com_cl_running->integer ) {
 			CL_Disconnect( qfalse );
@@ -368,8 +381,8 @@ void QDECL Com_Error( errorParm_t code, const char *fmt, ... ) {
 		}
 #endif
 		FS_PureServerSetLoadedPaks( "", "" );
-
 		com_errorEntered = qfalse;
+
 		longjmp( abortframe, -1 );
 	} else {
 		VM_Forced_Unload_Start();
@@ -377,6 +390,7 @@ void QDECL Com_Error( errorParm_t code, const char *fmt, ... ) {
 		CL_Shutdown( va( "Server fatal crashed: %s", com_errorMessage ), qtrue );
 #endif
 		SV_Shutdown( va( "Server fatal crashed: %s", com_errorMessage ) );
+		Com_EndRedirect();
 		VM_Forced_Unload_Done();
 	}
 
@@ -396,7 +410,7 @@ do the apropriate things.
 =============
 */
 void Com_Quit_f( void ) {
-	char *p = Cmd_Args();
+	const char *p = Cmd_ArgsFrom( 1 );
 	// don't try to shutdown if we are in a recursive error
 	if ( !com_errorEntered ) {
 		// Some VMs might execute "quit" command directly,
@@ -436,6 +450,8 @@ quake3 set test blah + map test
 #define	MAX_CONSOLE_LINES	32
 int		com_numConsoleLines;
 char	*com_consoleLines[MAX_CONSOLE_LINES];
+// master rcon password
+char	rconPassword2[MAX_CVAR_VALUE_STRING];
 
 /*
 ==================
@@ -446,30 +462,31 @@ Break it up into multiple console lines
 */
 void Com_ParseCommandLine( char *commandLine ) {
 	static int parsed = 0;
-    int inq;
+	int inq;
 
 	if ( parsed )
 		return;
 
 	inq = 0;
 	com_consoleLines[0] = commandLine;
+	rconPassword2[0] = '\0';
 
-    while ( *commandLine ) {
-        if (*commandLine == '"') {
-            inq = !inq;
-        }
-        // look for a + separating character
-        // if commandLine came from a file, we might have real line seperators
-        if ( (*commandLine == '+' && !inq) || *commandLine == '\n'  || *commandLine == '\r' ) {
-            if ( com_numConsoleLines == MAX_CONSOLE_LINES ) {
+	while ( *commandLine ) {
+		if (*commandLine == '"') {
+			inq = !inq;
+		}
+		// look for a + separating character
+		// if commandLine came from a file, we might have real line seperators
+		if ( (*commandLine == '+' && !inq) || *commandLine == '\n'  || *commandLine == '\r' ) {
+			if ( com_numConsoleLines == MAX_CONSOLE_LINES ) {
 				break;
-            }
-            com_consoleLines[com_numConsoleLines] = commandLine + 1;
-            com_numConsoleLines++;
-            *commandLine = 0;
-        }
-        commandLine++;
-    }
+			}
+			com_consoleLines[com_numConsoleLines] = commandLine + 1;
+			com_numConsoleLines++;
+			*commandLine = '\0';
+		}
+		commandLine++;
+	}
 	parsed = 1;
 }
 
@@ -521,6 +538,11 @@ qboolean Com_EarlyParseCmdLine( char *commandLine, char *con_title, int title_si
 			flags |= 2;
 			continue;
 		}
+		if ( !Q_stricmpn( Cmd_Argv(0), "set", 3 ) && !Q_stricmp( Cmd_Argv(1), "rconPassword2" ) ) {
+			com_consoleLines[i][0] = '\0';
+			Q_strncpyz( rconPassword2, Cmd_Argv( 2 ), sizeof( rconPassword2 ) );
+			continue;
+		}
 	}
 
 	return (flags == 3) ? qtrue : qfalse ;
@@ -542,7 +564,7 @@ qboolean Com_SafeMode( void ) {
 		Cmd_TokenizeString( com_consoleLines[i] );
 		if ( !Q_stricmp( Cmd_Argv(0), "safe" )
 			|| !Q_stricmp( Cmd_Argv(0), "cvar_restart" ) ) {
-			com_consoleLines[i][0] = 0;
+			com_consoleLines[i][0] = '\0';
 			return qtrue;
 		}
 	}
@@ -639,10 +661,10 @@ void Info_Print( const char *s ) {
 		if (l < 20)
 		{
 			Com_Memset (o, ' ', 20-l);
-			key[20] = 0;
+			key[20] = '\0';
 		}
 		else
-			*o = 0;
+			*o = '\0';
 		Com_Printf ("%s ", key);
 
 		if (!*s)
@@ -655,7 +677,7 @@ void Info_Print( const char *s ) {
 		s++;
 		while (*s && *s != '\\')
 			*o++ = *s++;
-		*o = 0;
+		*o = '\0';
 
 		if (*s)
 			s++;
@@ -681,7 +703,7 @@ static const char *Com_StringContains( const char *str1, const char *str2, int c
 				}
 			}
 			else {
-				if (toupper(str1[j]) != toupper(str2[j])) {
+				if (locase[(byte)str1[j]] != locase[(byte)str2[j]]) {
 					break;
 				}
 			}
@@ -737,8 +759,8 @@ int Com_Filter( const char *filter, const char *name, int casesensitive )
 						if (*name >= *filter && *name <= *(filter+2)) found = qtrue;
 					}
 					else {
-						if (toupper(*name) >= toupper(*filter) &&
-							toupper(*name) <= toupper(*(filter+2))) found = qtrue;
+						if (locase[(byte)*name] >= locase[(byte)*filter] &&
+							locase[(byte)*name] <= locase[(byte)*(filter+2)]) found = qtrue;
 					}
 					filter += 3;
 				}
@@ -747,7 +769,7 @@ int Com_Filter( const char *filter, const char *name, int casesensitive )
 						if (*filter == *name) found = qtrue;
 					}
 					else {
-						if (toupper(*filter) == toupper(*name)) found = qtrue;
+						if (locase[(byte)*filter] == locase[(byte)*name]) found = qtrue;
 					}
 					filter++;
 				}
@@ -765,7 +787,7 @@ int Com_Filter( const char *filter, const char *name, int casesensitive )
 				if (*filter != *name) return qfalse;
 			}
 			else {
-				if (toupper(*filter) != toupper(*name)) return qfalse;
+				if (locase[(byte)*filter] != locase[(byte)*name]) return qfalse;
 			}
 			filter++;
 			name++;
@@ -837,6 +859,43 @@ int Com_RealTime(qtime_t *qtime) {
 
 
 /*
+================
+Sys_Microseconds
+================
+*/
+int64_t Sys_Microseconds( void )
+{
+#ifdef _WIN32
+	static qboolean inited = qfalse;
+	static LARGE_INTEGER base;
+	static LARGE_INTEGER freq;
+	LARGE_INTEGER curr;
+
+	if ( !inited )
+	{
+		QueryPerformanceFrequency( &freq );
+		QueryPerformanceCounter( &base );
+		if ( !freq.QuadPart )
+		{
+			return (int64_t)Sys_Milliseconds() * 1000LL; // fallback
+		} 
+		inited = qtrue;
+		return 0;
+	}
+
+	QueryPerformanceCounter( &curr );
+
+	return ((curr.QuadPart - base.QuadPart) * 1000000LL) / freq.QuadPart;
+#else
+	struct timeval curr;
+	gettimeofday( &curr, NULL );
+
+	return (int64_t)curr.tv_sec * 1000000LL + (int64_t)curr.tv_usec;
+#endif
+}
+
+
+/*
 ==============================================================================
 
 						ZONE MEMORY ALLOCATION
@@ -854,12 +913,14 @@ all big things are allocated on the hunk.
 #define	ZONEID	0x1d4a11
 #define MINFRAGMENT	64
 
+#ifdef ZONE_DEBUG
 typedef struct zonedebug_s {
 	char *label;
 	char *file;
 	int line;
 	int allocSize;
 } zonedebug_t;
+#endif
 
 struct memzone_s;
 
@@ -1031,7 +1092,7 @@ Z_FreeTags
 ================
 */
 void Z_FreeTags( memtag_t tag ) {
-	int			count;
+	//int			count;
 	memzone_t	*zone;
 
 	if ( tag == TAG_SMALL ) {
@@ -1040,13 +1101,13 @@ void Z_FreeTags( memtag_t tag ) {
 	else {
 		zone = mainzone;
 	}
-	count = 0;
+	//count = 0;
 	// use the rover as our pointer, because
 	// Z_Free automatically adjusts it
 	zone->rover = zone->blocklist.next;
 	do {
 		if ( zone->rover->tag == tag ) {
-			count++;
+		//	count++;
 			Z_Free( (void *)(zone->rover + 1) );
 			continue;
 		}
@@ -1834,12 +1895,12 @@ static void Com_InitHunkMemory( void ) {
 		s_hunkTotal = cv->integer * 1024 * 1024;
 	}
 
-	s_hunkData = calloc( s_hunkTotal + 31, 1 );
+	s_hunkData = calloc( s_hunkTotal + 63, 1 );
 	if ( !s_hunkData ) {
 		Com_Error( ERR_FATAL, "Hunk data failed to allocate %i megs", s_hunkTotal / (1024*1024) );
 	}
 	// cacheline align
-	s_hunkData = (byte *) ( ( (intptr_t)s_hunkData + 31 ) & ~31 );
+	s_hunkData = PADP( s_hunkData, 64 );
 	Hunk_Clear();
 
 	Cmd_AddCommand( "meminfo", Com_Meminfo_f );
@@ -1851,6 +1912,7 @@ static void Com_InitHunkMemory( void ) {
 	Cmd_AddCommand( "hunksmalllog", Hunk_SmallLog );
 #endif
 }
+
 
 /*
 ====================
@@ -1866,6 +1928,7 @@ int	Hunk_MemoryRemaining( void ) {
 	return s_hunkTotal - ( low + high );
 }
 
+
 /*
 ===================
 Hunk_SetMark
@@ -1878,6 +1941,7 @@ void Hunk_SetMark( void ) {
 	hunk_high.mark = hunk_high.permanent;
 }
 
+
 /*
 =================
 Hunk_ClearToMark
@@ -1889,6 +1953,7 @@ void Hunk_ClearToMark( void ) {
 	hunk_low.permanent = hunk_low.temp = hunk_low.mark;
 	hunk_high.permanent = hunk_high.temp = hunk_high.mark;
 }
+
 
 /*
 =================
@@ -1943,6 +2008,7 @@ void Hunk_Clear( void ) {
 #endif
 }
 
+
 static void Hunk_SwapBanks( void ) {
 	hunkUsed_t	*swap;
 
@@ -1960,6 +2026,7 @@ static void Hunk_SwapBanks( void ) {
 		hunk_permanent = swap;
 	}
 }
+
 
 /*
 =================
@@ -3196,10 +3263,8 @@ void Com_Init( char *commandLine ) {
 #ifndef DEDICATED
 	com_maxfps = Cvar_Get( "com_maxfps", "125", 0 ); // try to force that in some light way
 	com_maxfpsUnfocused = Cvar_Get( "com_maxfpsUnfocused", "60", CVAR_ARCHIVE_ND );
-	com_maxfpsMinimized = Cvar_Get( "com_maxfpsMinimized", "30", CVAR_ARCHIVE_ND );
 	Cvar_CheckRange( com_maxfps, "0", "1000", CV_INTEGER );
 	Cvar_CheckRange( com_maxfpsUnfocused, "0", "1000", CV_INTEGER );
-	Cvar_CheckRange( com_maxfpsMinimized, "0", "1000", CV_INTEGER );
 	com_yieldCPU = Cvar_Get( "com_yieldCPU", "2", CVAR_ARCHIVE_ND );
 	Cvar_CheckRange( com_yieldCPU, "0", "4", CV_INTEGER );
 #endif
@@ -3248,28 +3313,34 @@ void Com_Init( char *commandLine ) {
 		gw_minimized = qfalse;
 	}
 
-	if ( com_developer && com_developer->integer ) {
-		Cmd_AddCommand ("error", Com_Error_f);
-		Cmd_AddCommand ("crash", Com_Crash_f );
-		Cmd_AddCommand ("freeze", Com_Freeze_f);
+	if ( com_developer->integer ) {
+		Cmd_AddCommand( "error", Com_Error_f );
+		Cmd_AddCommand( "crash", Com_Crash_f );
+		Cmd_AddCommand( "freeze", Com_Freeze_f );
 	}
-	Cmd_AddCommand ("quit", Com_Quit_f);
-	Cmd_AddCommand ("changeVectors", MSG_ReportChangeVectors_f );
-	Cmd_AddCommand ("writeconfig", Com_WriteConfig_f );
-	Cmd_SetCommandCompletionFunc( "writeconfig", Cmd_CompleteWriteCfgName );
-	Cmd_AddCommand("game_restart", Com_GameRestart_f);
 
-	s = va("%s %s %s", Q3_VERSION, PLATFORM_STRING, __DATE__ );
-	com_version = Cvar_Get ("version", s, CVAR_ROM | CVAR_SERVERINFO );
+	Cmd_AddCommand( "quit", Com_Quit_f );
+	Cmd_AddCommand( "changeVectors", MSG_ReportChangeVectors_f );
+	Cmd_AddCommand( "writeconfig", Com_WriteConfig_f );
+	Cmd_SetCommandCompletionFunc( "writeconfig", Cmd_CompleteWriteCfgName );
+	Cmd_AddCommand( "game_restart", Com_GameRestart_f );
+
+	s = va( "%s %s %s", Q3_VERSION, PLATFORM_STRING, __DATE__ );
+	com_version = Cvar_Get( "version", s, CVAR_PROTECTED | CVAR_ROM | CVAR_SERVERINFO );
+
+#ifndef DEDICATED
+	// for now - this will be used to inform server about q3msgboom fix
+	Cvar_Get( "client", Q3_VERSION, CVAR_PROTECTED | CVAR_ROM | CVAR_USERINFO );
+#endif
 
 	// this cvar is the single entry point of the entire extension system
-	Cvar_Get( "//trap_GetValue", va( "%i", COM_TRAP_GETVALUE ), CVAR_INIT | CVAR_ROM );
+	Cvar_Get( "//trap_GetValue", va( "%i", COM_TRAP_GETVALUE ), CVAR_PROTECTED | CVAR_ROM );
 
 	Sys_Init();
 
 #if defined (id386) || defined (idx64)
 	// CPU detection
-	Cvar_Get( "sys_cpustring", "detect", CVAR_ROM | CVAR_NORESTART );
+	Cvar_Get( "sys_cpustring", "detect", CVAR_PROTECTED | CVAR_ROM | CVAR_NORESTART );
 	if ( !Q_stricmp( Cvar_VariableString( "sys_cpustring" ), "detect" ) )
 	{
 		static char vendor[128];
@@ -3569,9 +3640,6 @@ void Com_Frame( qboolean noDelay ) {
 			minMsec = 0;
 			bias = 0;
 		} else {
-			if ( gw_minimized && com_maxfpsMinimized->integer > 0 )
-				minMsec = 1000 / com_maxfpsMinimized->integer;
-			else
 			if ( !gw_active && com_maxfpsUnfocused->integer > 0 )
 				minMsec = 1000 / com_maxfpsUnfocused->integer;
 			else
@@ -3807,12 +3875,12 @@ static void FindMatches( const char *s ) {
 	// cut shortestMatch to the amount common with s
 	for ( i = 0 ; shortestMatch[i] ; i++ ) {
 		if ( i >= n ) {
-			shortestMatch[i] = 0;
+			shortestMatch[i] = '\0';
 			break;
 		}
 
 		if ( tolower(shortestMatch[i]) != tolower(s[i]) ) {
-			shortestMatch[i] = 0;
+			shortestMatch[i] = '\0';
 		}
 	}
 }
@@ -3919,7 +3987,7 @@ Field_CompleteFilename
 void Field_CompleteFilename( const char *dir, const char *ext, qboolean stripExt, int flags )
 {
 	matchCount = 0;
-	shortestMatch[ 0 ] = 0;
+	shortestMatch[ 0 ] = '\0';
 
 	FS_FilenameCompletion( dir, ext, stripExt, FindMatches, flags );
 
@@ -3996,7 +4064,7 @@ void Field_CompleteCommand( char *cmd, qboolean doCommands, qboolean doCvars )
 			completionString++;
 
 		matchCount = 0;
-		shortestMatch[ 0 ] = 0;
+		shortestMatch[ 0 ] = '\0';
 
 		if( completionString[0] == '\0' )
 			return;
@@ -4050,7 +4118,7 @@ void Com_RandomBytes( byte *string, int len )
 		return;
 
 	Com_Printf( "Com_RandomBytes: using weak randomization\n" );
-	srand( time( 0 ) );
+	srand( time( NULL ) );
 	for( i = 0; i < len; i++ )
 		string[i] = (unsigned char)( rand() % 256 );
 }

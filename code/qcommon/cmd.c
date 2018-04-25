@@ -49,7 +49,7 @@ next frame.  This allows commands like:
 bind g "cmd use rocket ; +attack ; wait ; -attack ; cmd use blaster"
 ============
 */
-void Cmd_Wait_f( void ) {
+static void Cmd_Wait_f( void ) {
 	if ( Cmd_Argc() == 2 ) {
 		cmd_wait = atoi( Cmd_Argv( 1 ) );
 		if ( cmd_wait < 0 )
@@ -270,7 +270,7 @@ void Cbuf_Execute( void )
 Cmd_Exec_f
 ===============
 */
-void Cmd_Exec_f( void ) {
+static void Cmd_Exec_f( void ) {
 	qboolean quiet;
 	union {
 		char *c;
@@ -309,7 +309,7 @@ Cmd_Vstr_f
 Inserts the current value of a variable as command text
 ===============
 */
-void Cmd_Vstr_f( void ) {
+static void Cmd_Vstr_f( void ) {
 	const char *v;
 
 	if ( Cmd_Argc () != 2 ) {
@@ -329,9 +329,9 @@ Cmd_Echo_f
 Just prints the rest of the line to the console
 ===============
 */
-void Cmd_Echo_f (void)
+static void Cmd_Echo_f( void )
 {
-	Com_Printf ("%s\n", Cmd_Args());
+	Com_Printf( "%s\n", Cmd_ArgsFrom( 1 ) );
 }
 
 
@@ -409,43 +409,21 @@ void Cmd_ArgvBuffer( int arg, char *buffer, int bufferLength ) {
 ============
 Cmd_Args
 
-Returns a single string containing argv(1) to argv(argc()-1)
-============
-*/
-char *Cmd_Args( void ) {
-	static char cmd_args[MAX_STRING_CHARS];
-	int i;
-
-	cmd_args[0] = '\0';
-	for ( i = 1 ; i < cmd_argc ; i++ ) {
-		strcat( cmd_args, cmd_argv[i] );
-		if ( i != cmd_argc-1 ) {
-			strcat( cmd_args, " " );
-		}
-	}
-
-	return cmd_args;
-}
-
-
-/*
-============
-Cmd_Args
-
 Returns a single string containing argv(arg) to argv(argc()-1)
 ============
 */
 char *Cmd_ArgsFrom( int arg ) {
-	static char cmd_args[BIG_INFO_STRING];
+	static char cmd_args[BIG_INFO_STRING], *s;
 	int i;
 
-	cmd_args[0] = '\0';
+	s = cmd_args;
+	*s = '\0';
 	if (arg < 0)
 		arg = 0;
 	for ( i = arg ; i < cmd_argc ; i++ ) {
-		strcat( cmd_args, cmd_argv[i] );
+		s = Q_stradd( s, cmd_argv[i] );
 		if ( i != cmd_argc-1 ) {
-			strcat( cmd_args, " " );
+			s = Q_stradd( s, " " );
 		}
 	}
 
@@ -462,7 +440,7 @@ they can't have pointers returned to them
 ============
 */
 void Cmd_ArgsBuffer( char *buffer, int bufferLength ) {
-	Q_strncpyz( buffer, Cmd_Args(), bufferLength );
+	Q_strncpyz( buffer, Cmd_ArgsFrom( 1 ), bufferLength );
 }
 
 
@@ -487,17 +465,13 @@ char *Cmd_Cmd( void )
    https://bugzilla.icculus.org/show_bug.cgi?id=3593
    https://bugzilla.icculus.org/show_bug.cgi?id=4769
 */
-
 void Cmd_Args_Sanitize( void )
 {
 	int i;
 
-	for(i = 1; i < cmd_argc; i++)
+	for( i = 1; i < cmd_argc; i++ )
 	{
 		char *c = cmd_argv[i];
-		
-		if(strlen(c) > MAX_CVAR_VALUE_STRING - 1)
-			c[MAX_CVAR_VALUE_STRING - 1] = '\0';
 		
 		while ( (c = strpbrk(c, "\n\r")) != NULL ) {
 			*c = ' ';
@@ -530,18 +504,19 @@ static void Cmd_TokenizeString2( const char *text_in, qboolean ignoreQuotes ) {
 
 	// clear previous args
 	cmd_argc = 0;
+	cmd_cmd[0] = '\0';
 
 	if ( !text_in ) {
 		return;
 	}
 	
-	Q_strncpyz( cmd_cmd, text_in, sizeof(cmd_cmd) );
+	Q_strncpyz( cmd_cmd, text_in, sizeof( cmd_cmd ) );
 
-	text = text_in;
+	text = cmd_cmd; // read from safe-length buffer
 	textOut = cmd_tokenized;
 
 	while ( 1 ) {
-		if ( cmd_argc >= MAX_STRING_TOKENS ) {
+		if ( cmd_argc >= ARRAY_LEN( cmd_argv ) ) {
 			return;			// this is usually something malicious
 		}
 
@@ -556,7 +531,10 @@ static void Cmd_TokenizeString2( const char *text_in, qboolean ignoreQuotes ) {
 
 			// skip // comments
 			if ( text[0] == '/' && text[1] == '/' ) {
-				return;			// all tokens parsed
+				// accept protocol headers (e.g. http://) in command lines that matching "*?[a-z]://" pattern
+				if ( text < cmd_cmd + 3 || text[-1] != ':' || text[-2] < 'a' || text[-2] > 'z' ) {
+					return; // all tokens parsed
+				}
 			}
 
 			// skip /* */ comments
@@ -582,7 +560,7 @@ static void Cmd_TokenizeString2( const char *text_in, qboolean ignoreQuotes ) {
 			while ( *text && *text != '"' ) {
 				*textOut++ = *text++;
 			}
-			*textOut++ = 0;
+			*textOut++ = '\0';
 			if ( !*text ) {
 				return;		// all tokens parsed
 			}
@@ -601,7 +579,10 @@ static void Cmd_TokenizeString2( const char *text_in, qboolean ignoreQuotes ) {
 			}
 
 			if ( text[0] == '/' && text[1] == '/' ) {
-				break;
+				// accept protocol headers (e.g. http://) in command lines that matching "*?[a-z]://" pattern
+				if ( text < cmd_cmd + 3 || text[-1] != ':' || text[-2] < 'a' || text[-2] > 'z' ) {
+					break;
+				}
 			}
 
 			// skip /* */ comments
@@ -618,7 +599,6 @@ static void Cmd_TokenizeString2( const char *text_in, qboolean ignoreQuotes ) {
 			return;		// all tokens parsed
 		}
 	}
-	
 }
 
 

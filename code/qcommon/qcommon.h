@@ -187,7 +187,7 @@ void		QDECL NET_OutOfBandPrint( netsrc_t net_socket, const netadr_t *adr, const 
 void		NET_OutOfBandCompress( netsrc_t sock, const netadr_t *adr, const byte *data, int len );
 
 qboolean	NET_CompareAdr( const netadr_t *a, const netadr_t *b );
-qboolean	NET_CompareBaseAdrMask( const netadr_t *a, const netadr_t *b, int netmask );
+qboolean	NET_CompareBaseAdrMask( const netadr_t *a, const netadr_t *b, unsigned int netmask );
 qboolean	NET_CompareBaseAdr( const netadr_t *a, const netadr_t *b );
 qboolean	NET_IsLocalAddress( const netadr_t *adr );
 const char	*NET_AdrToString( const netadr_t *a );
@@ -196,7 +196,9 @@ int         NET_StringToAdr( const char *s, netadr_t *a, netadrtype_t family );
 qboolean	NET_GetLoopPacket( netsrc_t sock, netadr_t *net_from, msg_t *net_message );
 void		NET_JoinMulticast6( void );
 void		NET_LeaveMulticast6( void );
-void		NET_Sleep( int msec, int usec_bias );
+qboolean	NET_Sleep( int msec, int usec_bias );
+
+#define	MAX_PACKETLEN	1400	// max size of a network packet
 
 #define	MAX_MSGLEN		16384	// max length of a message, which may
 								// be fragmented into multiple packets
@@ -474,10 +476,9 @@ int		Cmd_Argc( void );
 void	Cmd_Clear( void );
 char	*Cmd_Argv( int arg );
 void	Cmd_ArgvBuffer( int arg, char *buffer, int bufferLength );
-char	*Cmd_Args (void);
 char	*Cmd_ArgsFrom( int arg );
 void	Cmd_ArgsBuffer( char *buffer, int bufferLength );
-char	*Cmd_Cmd (void);
+char	*Cmd_Cmd( void );
 void	Cmd_Args_Sanitize( void );
 // The functions that execute commands get their parameters with these
 // functions. Cmd_Argv () will return an empty string, not a NULL
@@ -644,6 +645,8 @@ typedef enum {
 #define	MAX_FILE_HANDLES	64
 #define	FS_INVALID_HANDLE	0
 
+#define	MAX_FOUND_FILES		0x2000
+
 #ifdef DEDICATED
 #define Q3CONFIG_CFG "q3config_server.cfg"
 #else
@@ -749,8 +752,7 @@ int		FS_Seek( fileHandle_t f, long offset, fsOrigin_t origin );
 qboolean FS_FilenameCompare( const char *s1, const char *s2 );
 
 const char *FS_LoadedPakNames( void );
-const char *FS_LoadedPakChecksums( void );
-const char *FS_LoadedPakPureChecksums( void );
+const char *FS_LoadedPakChecksums( qboolean *overflowed );
 // Returns a space separated string containing the checksums of all loaded pk3 files.
 // Servers with sv_pure set will get this string and pass it to clients.
 
@@ -770,6 +772,8 @@ void FS_PureServerSetLoadedPaks( const char *pakSums, const char *pakNames );
 // If not empty, only pk3 files that match one of the space
 // separated checksums will be checked for files, with the
 // sole exception of .cfg files.
+
+qboolean FS_IsPureChecksum( int sum );
 
 qboolean FS_InvalidGameDir( const char *gamedir );
 qboolean FS_idPak( const char *pak, const char *base, int numPaks );
@@ -882,9 +886,13 @@ int			Com_Milliseconds( void );	// will be journaled properly
 unsigned	Com_BlockChecksum( const void *buffer, int length );
 
 // MD5 functions
+
 char		*Com_MD5File(const char *filename, int length, const char *prefix, int prefix_len);
 char		*Com_MD5Buf( const char *data, int length, const char *data2, int length2 );
-int			Com_MD5Addr( const netadr_t *addr, const byte *seed, int seed_len );
+
+// stateless challenge functions
+void		Com_MD5Init( void );
+int			Com_MD5Addr( const netadr_t *addr, int timestamp );
 
 qboolean	Com_CDKeyValidate( const char *key, const char *checksum );
 qboolean	Com_EarlyParseCmdLine( char *commandLine, char *con_title, int title_size, int *vid_xpos, int *vid_ypos );
@@ -944,6 +952,8 @@ extern	qboolean	gw_active;
 extern	qboolean	com_errorEntered;
 
 extern	fileHandle_t	com_journalDataFile;
+
+extern	char	rconPassword2[ MAX_CVAR_VALUE_STRING ];
 
 typedef enum {
 	TAG_FREE,
@@ -1088,6 +1098,7 @@ void S_ClearSoundBuffer( void );
 void SV_Init( void );
 void SV_Shutdown( const char *finalmsg );
 void SV_Frame( int msec );
+void SV_TrackCvarChanges( void );
 void SV_PacketEvent( const netadr_t *from, msg_t *msg );
 int SV_FrameMsec( void );
 qboolean SV_GameCommand( void );
@@ -1165,6 +1176,7 @@ void	Sys_SetAffinityMask( int mask );
 // Sys_Milliseconds should only be used for profiling purposes,
 // any game related timing information should come from event timestamps
 int		Sys_Milliseconds( void );
+int64_t	Sys_Microseconds( void );
 
 void	Sys_SnapVector( float *v );
 

@@ -492,7 +492,7 @@ int StringContains(char *str1, char *str2, int casesensitive)
 			} //end if
 			else
 			{
-				if (toupper(str1[j]) != toupper(str2[j])) break;
+				if (locase[(byte)str1[j]] != locase[(byte)str2[j]]) break;
 			} //end else
 		} //end for
 		if (!str2[j]) return index;
@@ -529,7 +529,7 @@ char *StringContainsWord(char *str1, char *str2, int casesensitive)
 			} //end if
 			else
 			{
-				if (toupper(str1[j]) != toupper(str2[j])) break;
+				if (locase[(byte)str1[j]] != locase[(byte)str2[j]]) break;
 			} //end else
 		} //end for
 		//if there was a word match
@@ -696,14 +696,14 @@ bot_synonymlist_t *BotLoadSynonyms( const char *filename )
 							return NULL;
 						} //end if
 						StripDoubleQuotes(token.string);
-						if (strlen(token.string) <= 0)
+						len = (int)strlen(token.string);
+						if (len==0)
 						{
 							SourceError(source, "empty string");
 							FreeSource(source);
 							return NULL;
 						} //end if
-						len = strlen(token.string) + 1;
-						len = PAD(len, sizeof(long));
+						len = PAD(len+1, sizeof(long));
 						size += sizeof(bot_synonym_t) + len;
 						if (pass && ptr)
 						{
@@ -880,7 +880,7 @@ int BotLoadChatMessage(source_t *source, char *chatmessagestring)
 	token_t token;
 
 	ptr = chatmessagestring;
-	*ptr = 0;
+	*ptr = '\0';
 	//
 	while(1)
 	{

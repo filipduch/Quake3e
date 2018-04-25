@@ -496,7 +496,7 @@ static void VBO_AddStageColors( vbo_t *vbo, vbo_item_t *vi, const shaderCommands
 static void VBO_AddStageTxCoords( vbo_t *vbo, vbo_item_t *vi, const shaderCommands_t *input, int unit )
 {
 	vbo_stage_t *st = vi->stages + 0;
-	int offs = offs = vbo->tex_base[ unit ] + vbo->tex_used[ unit ];
+	int offs = vbo->tex_base[ unit ] + vbo->tex_used[ unit ];
 	int size;
 	if ( st->tex_offset[ unit ] == -1 ) // set only once
 		st->tex_offset[ unit ] = offs;
@@ -617,6 +617,7 @@ void R_BuildWorldVBO( msurface_t *surf, int surfCount )
 #ifdef USE_NORMALS
 	int norm_size;
 #endif
+	GLenum err;
 
 	int numStaticSurfaces = 0;
 	int numStaticIndexes = 0;
@@ -754,7 +755,7 @@ void R_BuildWorldVBO( msurface_t *surf, int surfCount )
 
 	backEnd.currentEntity = &tr.worldEntity;
 
-	for ( i = 0; i < numStaticSurfaces; i++ ) 
+	for ( i = 0; i < numStaticSurfaces; i++ )
 	{
 		sf = surfList[ i ];
 		face = (srfSurfaceFace_t *) sf->data;
@@ -795,29 +796,76 @@ void R_BuildWorldVBO( msurface_t *surf, int surfCount )
 	vbo->ibo_buffer_used = ibo_size;
 	vbo->vbo_buffer_used = vbo_size;
 
-	if ( !VBO_world_data )
+	// reset error state
+	qglGetError();
+	err = GL_NO_ERROR;
+
+	if ( !VBO_world_data ) {
 		qglGenBuffersARB( 1, &VBO_world_data );
+		if ( (err = qglGetError()) != GL_NO_ERROR )
+			goto __fail;
+	}
 
 	// upload vertex array & colors & textures
 	if ( VBO_world_data ) {
 		VBO_BindData();
 		qglBufferDataARB( GL_ARRAY_BUFFER_ARB, vbo->vbo_buffer_used, vbo->vbo_buffer, GL_STATIC_DRAW_ARB );
+		if ( (err = qglGetError()) != GL_NO_ERROR )
+			goto __fail;
 	}
 
 	if ( !VBO_world_indexes ) {
 		qglGenBuffersARB( 1, &VBO_world_indexes );
+		if ( (err = qglGetError()) != GL_NO_ERROR )
+			goto __fail;
 	}
 
 	// upload index array
 	if ( VBO_world_indexes ) {
 		VBO_BindIndex( qtrue );
 		qglBufferDataARB( GL_ELEMENT_ARRAY_BUFFER_ARB, vbo->ibo_buffer_used, vbo->ibo_buffer, GL_STATIC_DRAW_ARB );
+		if ( (err = qglGetError()) != GL_NO_ERROR )
+			goto __fail;
+	}
+
+	VBO_UnBind();
+	ri.Hunk_FreeTempMemory( vbo->vbo_buffer );
+	vbo->vbo_buffer = NULL;
+	return;
+
+__fail:
+
+	if ( err == GL_OUT_OF_MEMORY )
+		ri.Printf( PRINT_ALL, S_COLOR_YELLOW "%s: out of memory\n", __func__ );
+	else
+		ri.Printf( PRINT_ALL, S_COLOR_YELLOW "%s: error %i\n", __func__, err );
+
+	// reset vbo markers
+	for ( i = 0, n = 0, sf = surf; i < surfCount; i++, sf++ ) {
+		face = (srfSurfaceFace_t *) sf->data;
+		if ( face->surfaceType == SF_FACE ) {
+			face->vboItemIndex = 0;
+			continue;
+		}
+		tris = (srfTriangles_t *) sf->data;
+		if ( tris->surfaceType == SF_TRIANGLES ) {
+			tris->vboItemIndex = 0;
+			continue;
+		}
+		grid = (srfGridMesh_t *) sf->data;
+		if ( grid->surfaceType == SF_GRID ) {
+			grid->vboItemIndex = 0;
+			continue;
+		}
 	}
 
 	VBO_UnBind();
 
+	// release host memory
 	ri.Hunk_FreeTempMemory( vbo->vbo_buffer );
-	vbo->vbo_buffer = NULL;
+	
+	// release GPU resources
+	VBO_Cleanup();
 }
 
 
@@ -856,6 +904,8 @@ void VBO_Cleanup( void )
 		}
 	}
 	memset( vbo_fp, 0, sizeof( vbo_fp ) );
+
+	memset( &world_vbo, 0, sizeof( world_vbo ) );
 }
 
 
@@ -866,7 +916,7 @@ qsort_int
 */
 static void qsort_int( int *a, const int n ) {
 	int temp, m;
-	int	i, j; 
+	int i, j;
 
 	if ( n < 32 ) { // CUTOFF
 		for ( i = 1 ; i < n + 1 ; i++ ) {

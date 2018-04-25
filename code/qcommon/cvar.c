@@ -51,7 +51,7 @@ static long generateHashValue( const char *fname ) {
 	hash = 0;
 	i = 0;
 	while (fname[i] != '\0') {
-		letter = tolower(fname[i]);
+		letter = locase[(byte)fname[i]];
 		hash+=(long)(letter)*(i+119);
 		i++;
 	}
@@ -505,7 +505,7 @@ static void Cvar_QSortByName( cvar_t **a, int n )
 {
 	cvar_t *temp;
 	cvar_t *m;
-	int	i, j; 
+	int i, j;
 
 	i = 0;
 	j = n;
@@ -667,6 +667,12 @@ cvar_t *Cvar_Set2( const char *var_name, const char *value, qboolean force ) {
 			return var;
 		}
 
+		if ( (var->flags & CVAR_CHEAT) && !cvar_cheats->integer )
+		{
+			Com_Printf ("%s is cheat protected.\n", var_name);
+			return var;
+		}
+
 		if (var->flags & CVAR_LATCH)
 		{
 			if (var->latchedString)
@@ -688,13 +694,6 @@ cvar_t *Cvar_Set2( const char *var_name, const char *value, qboolean force ) {
 			cvar_group[ var->group ] = 1;
 			return var;
 		}
-
-		if ( (var->flags & CVAR_CHEAT) && !cvar_cheats->integer )
-		{
-			Com_Printf ("%s is cheat protected.\n", var_name);
-			return var;
-		}
-
 	}
 	else
 	{
@@ -916,7 +915,7 @@ qboolean Cvar_Command( void ) {
 	}
 
 	// set the value if forcing isn't required
-	Cvar_Set2 (v->name, Cmd_Args(), qfalse);
+	Cvar_Set2( v->name, Cmd_ArgsFrom( 1 ), qfalse );
 	return qtrue;
 }
 
@@ -1082,14 +1081,14 @@ const char *GetValue( int index, int *ival, float *fval )
 	{
 		*ival = atoi( cmd );
 		*fval = atof( cmd );
-		strcpy( buf, cmd );
+		Q_strncpyz( buf, cmd, sizeof( buf ) );
 		return buf;
 	}
 	else // found cvar, extract values
 	{
 		*ival = var->integer;
 		*fval = var->value;
-		strcpy( buf, var->string );
+		Q_strncpyz( buf, var->string, sizeof( buf ) );
 		return buf;
 	}
 }
@@ -1676,7 +1675,7 @@ char *Cvar_InfoString_Big(int bit)
 	static char	info[BIG_INFO_STRING];
 	cvar_t	*var;
 
-	info[0] = 0;
+	info[0] = '\0';
 
 	for (var = cvar_vars; var; var = var->next)
 	{

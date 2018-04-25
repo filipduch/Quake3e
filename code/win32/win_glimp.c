@@ -81,6 +81,7 @@ glwstate_t glw_state;
 static cvar_t *r_maskMinidriver;		// allow a different dll name to be treated as if it were opengl32.dll
 static cvar_t *r_stereoEnabled;
 static cvar_t *r_verbose;				// used for verbose debug spew
+static cvar_t *r_noborder;
 
 /*
 ** GLW_StartDriverAndSetMode
@@ -623,6 +624,8 @@ static qboolean GLW_CreateWindow( const char *drivername, int width, int height,
 		//r.top = 0;
 		//r.right  = width;
 		//r.bottom = height;
+		
+		g_wv.borderless = 0;
 
 		if ( cdsFullscreen )
 		{
@@ -632,7 +635,12 @@ static qboolean GLW_CreateWindow( const char *drivername, int width, int height,
 		else
 		{
 			exstyle = WINDOW_ESTYLE_NORMAL;
-			stylebits = WINDOW_STYLE_NORMAL;
+			if ( r_noborder->integer ) {
+				stylebits = WINDOW_STYLE_NORMAL_NB;
+				g_wv.borderless = r_noborder->integer;
+			} else {
+				stylebits = WINDOW_STYLE_NORMAL;
+			}
 			AdjustWindowRect( &r, stylebits, FALSE );
 		}
 
@@ -737,26 +745,10 @@ static void PrintCDSError( int value )
 	}
 }
 
-#if 0
-void dmprint(DEVMODE *dm){
-Com_Printf(S_COLOR_YELLOW"%ix%i-%ibpp@%iHz",
-			dm->dmPelsWidth,
-			dm->dmPelsHeight,
-			dm->dmBitsPerPel,
-			dm->dmDisplayFrequency);
-}
-void glprint() {
-	Com_Printf(" gl %ix:%i-%ibpp@%iHz: ",
-		glConfig.vidWidth,
-		glConfig.vidHeight,
-		glConfig.colorBits,
-		glConfig.displayFrequency);
-}
-#endif
-
 static DEVMODE dm_desktop, dm_current;
 
-void ResetDisplaySettings( void ) 
+
+static void ResetDisplaySettings( void )
 {
 	if ( glw_state.displayName[0] )
 		ChangeDisplaySettingsEx( glw_state.displayName, NULL, NULL, 0, NULL );
@@ -764,13 +756,15 @@ void ResetDisplaySettings( void )
 		ChangeDisplaySettingsEx( NULL, NULL, NULL, 0, NULL );
 }
 
-long ApplyDisplaySettings( DEVMODE *dm ) 
+
+static LONG ApplyDisplaySettings( DEVMODE *dm )
 {
-	int result;
 	DEVMODE curr;
+	LONG result;
 
 	// Get current display mode on current monitor
-	EnumDisplaySettings( glw_state.displayName, ENUM_CURRENT_SETTINGS, &curr );
+	if ( !EnumDisplaySettings( glw_state.displayName, ENUM_CURRENT_SETTINGS, &curr ) )
+		return DISP_CHANGE_FAILED;
 
 	// Check if current resolution is the same as we want to set
 	if ( curr.dmDisplayFrequency &&
@@ -1257,6 +1251,8 @@ void GLimp_Init( glconfig_t *config )
 	r_maskMinidriver = Cvar_Get( "r_maskMinidriver", "0", CVAR_LATCH );
 	r_stereoEnabled = Cvar_Get( "r_stereoEnabled", "0", CVAR_ARCHIVE_ND | CVAR_LATCH );
 	r_verbose = Cvar_Get( "r_verbose", "0", 0 );
+	r_noborder = Cvar_Get( "r_noborder", "0", CVAR_ARCHIVE_ND | CVAR_LATCH );
+	Cvar_CheckRange( r_noborder, "0", "1", CV_INTEGER );
 
 	// feedback to renderer configuration
 	glw_state.config = config;

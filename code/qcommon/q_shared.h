@@ -739,6 +739,8 @@ typedef enum {
 
 //=============================================
 
+extern const byte locase[ 256 ];
+
 int Q_isprint( int c );
 int Q_islower( int c );
 int Q_isupper( int c );
@@ -752,7 +754,6 @@ int		Q_strncmp (const char *s1, const char *s2, int n);
 int		Q_stricmpn (const char *s1, const char *s2, int n);
 char	*Q_strlwr( char *s1 );
 char	*Q_strupr( char *s1 );
-char	*Q_strrchr( const char* string, int c );
 const char	*Q_stristr( const char *s, const char *find);
 
 qboolean Q_isanumber( const char *s );
@@ -817,10 +818,8 @@ void Com_TruncateLongString( char *buffer, const char *s );
 // key / value info strings
 //
 char *Info_ValueForKey( const char *s, const char *key );
-void Info_RemoveKey( char *s, const char *key );
-void Info_RemoveKey_big( char *s, const char *key );
-void Info_SetValueForKey( char *s, const char *key, const char *value );
-void Info_SetValueForKey_Big( char *s, const char *key, const char *value );
+qboolean Info_SetValueForKey( char *s, const char *key, const char *value );
+qboolean Info_SetValueForKey_Big( char *s, const char *key, const char *value );
 qboolean Info_Validate( const char *s );
 void Info_NextPair( const char **s, char *key, char *value );
 
@@ -885,6 +884,7 @@ typedef enum {
 typedef enum {
 	CVG_NONE = 0,
 	CVG_RENDERER,
+	CVG_SERVER,
 	CVG_MAX,
 } cvarGroup_t;
 

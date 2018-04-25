@@ -40,8 +40,8 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #define INPUT_ID		101
 #define STATUS_ID       102
 
-#define DEFAULT_WIDTH   512
-#define DEFAULT_HEIGHT  384
+#define DEFAULT_WIDTH   600
+#define DEFAULT_HEIGHT  434
 
 #define BORDERW			1
 #define BORDERH			2
@@ -75,7 +75,6 @@ typedef struct
 	HWND		hwndButtonCopy;
 
 	HWND		hwndErrorBox;
-	HWND		hwndErrorText;
 
 	HBRUSH		hbrEditBackground;
 	HBRUSH		hbrErrorBackground;
@@ -137,24 +136,18 @@ static int GetStatusBarHeight( void )
 static int GetTimerMsec( void )
 {
 	int msec;
-	if ( !com_sv_running || Cvar_VariableIntegerValue( "sv_fps" ) == 0 ) {
+	if ( !com_sv_running || !com_sv_running->integer ) {
 		msec = 50; // 20fps
 	} else {
 		msec = 1000 / Cvar_VariableIntegerValue( "sv_fps" );
-		if ( msec < 1 )
-			msec = 1;
 	}
 #ifndef DEDICATED
-	if ( com_cl_running ) {
+	if ( com_cl_running && com_cl_running->integer ) {
 		if ( com_maxfps->integer ) {
 			msec = 1000 / com_maxfps->integer;
-			if ( msec < 1 )
-				msec = 1;
 		}
 		if ( Cvar_VariableIntegerValue( "com_maxfpsUnfocused" ) ) {
 			msec = 1000 / Cvar_VariableIntegerValue( "com_maxfpsUnfocused" );
-			if ( msec < 1 )
-				msec = 1;
 		}
 		if ( gw_minimized || CL_VideoRecording() ) {
 			return 0;
@@ -330,7 +323,7 @@ static LRESULT WINAPI ConWndProc( HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 
 	case WM_SYSCOMMAND:
 		// Prevent Alt+Letter commands from hanging the application temporarily
-		if ( wParam == SC_KEYMENU )
+		if ( wParam == SC_KEYMENU || wParam == SC_MOUSEMENU + HTSYSMENU || wParam == SC_CLOSE + HTSYSMENU )
 			return 0;
 
 		// simulate drag move to avoid ~500ms delay between DefWindowProc() and further WM_ENTERSIZEMOVE

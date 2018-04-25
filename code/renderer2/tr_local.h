@@ -1447,7 +1447,7 @@ typedef struct {
 	const byte				*externalVisData;	// from RE_SetWorldVisData, shared with CM_Load
 
 	image_t					*defaultImage;
-	image_t					*scratchImage[32];
+	image_t					*scratchImage[ MAX_VIDEO_HANDLES ];
 	image_t					*fogImage;
 	image_t					*dlightImage;	// inverse-quare highlight for projective adding
 	image_t					*flareImage;
@@ -2430,6 +2430,7 @@ void RE_TakeVideoFrame( int width, int height,
 		byte *captureBuffer, byte *encodeBuffer, qboolean motionJpeg );
 
 void RE_FinishBloom( void );
+void RE_ThrottleBackend( void );
 qboolean RE_CanMinimize( void );
 const glconfig_t *RE_GetConfig( void );
 

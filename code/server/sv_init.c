@@ -146,10 +146,10 @@ void SV_SetConfigstring (int index, const char *val) {
 	}
 }
 
+
 /*
 ===============
 SV_GetConfigstring
-
 ===============
 */
 void SV_GetConfigstring( int index, char *buffer, int bufferSize ) {
@@ -160,7 +160,7 @@ void SV_GetConfigstring( int index, char *buffer, int bufferSize ) {
 		Com_Error (ERR_DROP, "SV_GetConfigstring: bad index %i", index);
 	}
 	if ( !sv.configstrings[index] ) {
-		buffer[0] = 0;
+		buffer[0] = '\0';
 		return;
 	}
 
@@ -586,31 +586,15 @@ void SV_SpawnServer( const char *mapname, qboolean killBots ) {
 	}	
 
 	// run another frame to allow things to look at all the players
-	VM_Call (gvm, GAME_RUN_FRAME, sv.time);
-	SV_BotFrame (sv.time);
+	VM_Call( gvm, GAME_RUN_FRAME, sv.time );
+	SV_BotFrame( sv.time );
 	sv.time += 100;
 	svs.time += 100;
 
-	if ( sv_pure->integer ) {
-		// the server sends these to the clients so they will only
-		// load pk3s also loaded at the server
-		p = FS_LoadedPakChecksums();
-		Cvar_Set( "sv_paks", p );
-		if ( *p == '\0' ) {
-			Com_Printf( "WARNING: sv_pure set but no PK3 files loaded\n" );
-		}
-		p = FS_LoadedPakNames();
-		Cvar_Set( "sv_pakNames", p );
-
-		// if a dedicated pure server we need to touch the cgame because it could be in a
-		// seperate pk3 file and the client will need to load the latest cgame.qvm
-		if ( com_dedicated->integer ) {
-			SV_TouchCGame();
-		}
-	}
-	else {
-		Cvar_Set( "sv_paks", "" );
-		Cvar_Set( "sv_pakNames", "" );
+	// if a dedicated pure server we need to touch the cgame because it could be in a
+	// seperate pk3 file and the client will need to load the latest cgame.qvm
+	if ( com_dedicated->integer && sv_pure->integer ) {
+		SV_TouchCGame();
 	}
 
 	// the server sends these to the clients so they can figure
@@ -619,6 +603,34 @@ void SV_SpawnServer( const char *mapname, qboolean killBots ) {
 	Cvar_Set( "sv_referencedPaks", p );
 	p = FS_ReferencedPakNames();
 	Cvar_Set( "sv_referencedPakNames", p );
+
+	Cvar_Set( "sv_paks", "" );
+	Cvar_Set( "sv_pakNames", "" ); // not used on client-side
+
+	if ( sv_pure->integer ) {
+		int freespace, pakslen, infolen;
+		qboolean overflowed = qfalse;
+
+		p = FS_LoadedPakChecksums( &overflowed );
+
+		pakslen = strlen( p ) + 9; // + strlen( "\\sv_paks\\" )
+		freespace = SV_RemainingGameState();
+		infolen = strlen( Cvar_InfoString_Big( CVAR_SYSTEMINFO ) );
+
+		if ( pakslen > freespace || infolen + pakslen >= BIG_INFO_STRING || overflowed ) {
+			// switch to degraded pure mode
+			// this could *potentially* lead to a false "unpure client" detection
+			// which is better than guaranteed drop
+			Com_DPrintf( S_COLOR_YELLOW "WARNING: skipping sv_paks setup to avoid gamestate overflow\n" );
+		} else {
+			// the server sends these to the clients so they will only
+			// load pk3s also loaded at the server
+			Cvar_Set( "sv_paks", p );
+			if ( *p == '\0' ) {
+				Com_Printf( "WARNING: sv_pure set but no PK3 files loaded\n" );
+			}
+		}
+	}
 
 	// save systeminfo and serverinfo strings
 	SV_SetConfigstring( CS_SYSTEMINFO, Cvar_InfoString_Big( CVAR_SYSTEMINFO ) );
@@ -672,12 +684,15 @@ void SV_Init( void )
 	sv_privateClients = Cvar_Get ("sv_privateClients", "0", CVAR_SERVERINFO);
 	sv_hostname = Cvar_Get ("sv_hostname", "noname", CVAR_SERVERINFO | CVAR_ARCHIVE );
 	sv_maxclients = Cvar_Get ("sv_maxclients", "8", CVAR_SERVERINFO | CVAR_LATCH);
+	
+	sv_maxconcurrent = Cvar_Get( "sv_maxconcurrent", "4", CVAR_ARCHIVE );
+	Cvar_CheckRange( sv_maxconcurrent, "1", NULL, CV_INTEGER );
+	Cvar_SetDescription( sv_maxconcurrent, "Limits number of simultaneous connections from the same IP address." );
 
 	sv_minRate = Cvar_Get ("sv_minRate", "0", CVAR_ARCHIVE_ND | CVAR_SERVERINFO );
 	sv_maxRate = Cvar_Get ("sv_maxRate", "0", CVAR_ARCHIVE_ND | CVAR_SERVERINFO );
 	sv_dlRate = Cvar_Get("sv_dlRate", "100", CVAR_ARCHIVE | CVAR_SERVERINFO);
 	sv_floodProtect = Cvar_Get ("sv_floodProtect", "1", CVAR_ARCHIVE | CVAR_SERVERINFO );
-	Cvar_CheckRange( sv_floodProtect, NULL, NULL, CV_BOOLEAN );
 
 	// systeminfo
 	Cvar_Get ("sv_cheats", "1", CVAR_SYSTEMINFO | CVAR_ROM );
@@ -704,31 +719,26 @@ void SV_Init( void )
 	sv_allowDownload = Cvar_Get ("sv_allowDownload", "1", CVAR_SERVERINFO);
 	Cvar_Get ("sv_dlURL", "", CVAR_SERVERINFO | CVAR_ARCHIVE);
 
-	sv_master[0] = Cvar_Get("sv_master1", MASTER_SERVER_NAME, 0);
-	sv_master[1] = Cvar_Get("sv_master2", "master.ioquake3.org", 0);
-	sv_master[2] = Cvar_Get("sv_master3", "master.maverickservers.com", 0);
+	sv_master[0] = Cvar_Get( "sv_master1", MASTER_SERVER_NAME, CVAR_INIT );
+	sv_master[1] = Cvar_Get( "sv_master2", "master.ioquake3.org", CVAR_INIT );
+	sv_master[2] = Cvar_Get( "sv_master3", "master.maverickservers.com", CVAR_INIT );
 
 	for ( index = 3; index < MAX_MASTER_SERVERS; index++ )
 		sv_master[index] = Cvar_Get(va("sv_master%d", index + 1), "", CVAR_ARCHIVE);
 
-	sv_reconnectlimit = Cvar_Get ("sv_reconnectlimit", "3", 0);
+	sv_reconnectlimit = Cvar_Get( "sv_reconnectlimit", "3", 0 );
+	Cvar_CheckRange( sv_reconnectlimit, "0", "12", CV_INTEGER );
+
 	sv_padPackets = Cvar_Get ("sv_padPackets", "0", 0);
 	sv_killserver = Cvar_Get ("sv_killserver", "0", 0);
 	sv_mapChecksum = Cvar_Get ("sv_mapChecksum", "", CVAR_ROM);
 	sv_lanForceRate = Cvar_Get ("sv_lanForceRate", "1", CVAR_ARCHIVE_ND );
-
-#ifndef STANDALONE
-	sv_strictAuth = Cvar_Get ("sv_strictAuth", "1", CVAR_ARCHIVE_ND );
-#endif
 
 #ifdef USE_BANS
 	sv_banFile = Cvar_Get("sv_banFile", "serverbans.dat", CVAR_ARCHIVE);
 #endif
 
 	sv_levelTimeReset = Cvar_Get( "sv_levelTimeReset", "0", CVAR_ARCHIVE_ND );
-
-	//extented version marker
-	Cvar_Get( "sv_version_ex", "1", CVAR_ROM );
 
 	// initialize bot cvars so they are listed and can be set before loading the botlib
 	SV_BotInitCvars();
@@ -740,6 +750,15 @@ void SV_Init( void )
 	// Load saved bans
 	Cbuf_AddText("rehashbans\n");
 #endif
+
+	// track group cvar changes
+	Cvar_SetGroup( sv_lanForceRate, CVG_SERVER );
+	Cvar_SetGroup( sv_minRate, CVG_SERVER );
+	Cvar_SetGroup( sv_maxRate, CVG_SERVER );
+	Cvar_SetGroup( sv_fps, CVG_SERVER );
+
+	// force initial check
+	SV_TrackCvarChanges();
 
 	SV_InitChallenger();
 	// Load PureSkill Anticheat

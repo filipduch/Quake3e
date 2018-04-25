@@ -170,7 +170,7 @@ typedef struct {
 	netadr_t	serverAddress;
 	int			connectTime;				// for connection retransmits
 	int			connectPacketCount;			// for display on connection dialog
-	char		serverMessage[MAX_STRING_TOKENS];	// for display on connection dialog
+	char		serverMessage[MAX_STRING_CHARS]; // for display on connection dialog
 
 	int			challenge;					// from the server to use for connecting
 	int			checksumFeed;				// from the server for checksum calculations
@@ -376,6 +376,7 @@ extern	cvar_t	*cl_maxpackets;
 extern	cvar_t	*cl_packetdup;
 extern	cvar_t	*cl_shownet;
 extern	cvar_t	*cl_showSend;
+extern	cvar_t	*cl_autoNudge;
 extern	cvar_t	*cl_timeNudge;
 extern	cvar_t	*cl_showTimeDelta;
 
@@ -445,9 +446,6 @@ void CL_AddReliableCommand( const char *cmd, qboolean isDisconnectCmd );
 void CL_StartHunkUsers( void );
 
 void CL_Disconnect_f( void );
-void CL_Vid_Restart_f( void );
-void CL_Snd_Restart_f( void );
-void CL_NextDemo( void );
 void CL_ReadDemoMessage( void );
 void CL_StopRecord_f( void );
 
@@ -569,7 +567,6 @@ e_status CIN_StopCinematic(int handle);
 e_status CIN_RunCinematic (int handle);
 void CIN_DrawCinematic (int handle);
 void CIN_SetExtents (int handle, int x, int y, int w, int h);
-void CIN_SetLooping (int handle, qboolean loop);
 void CIN_UploadCinematic(int handle);
 void CIN_CloseAllVideos(void);
 
@@ -596,7 +593,7 @@ void LAN_SaveServersToCache( void );
 //
 // cl_net_chan.c
 //
-void CL_Netchan_Transmit( netchan_t *chan, msg_t* msg);	//int length, const byte *data );
+void CL_Netchan_Transmit( netchan_t *chan, msg_t *msg );
 qboolean CL_Netchan_Process( netchan_t *chan, msg_t *msg );
 
 //

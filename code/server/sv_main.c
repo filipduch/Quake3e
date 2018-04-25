@@ -33,6 +33,7 @@ cvar_t	*sv_rconPassword;		// password for remote server commands
 cvar_t	*sv_privatePassword;	// password for the privateClient slots
 cvar_t	*sv_allowDownload;
 cvar_t	*sv_maxclients;
+cvar_t	*sv_maxconcurrent;
 
 cvar_t	*sv_privateClients;		// number of clients reserved for password
 cvar_t	*sv_hostname;
@@ -50,15 +51,14 @@ cvar_t	*sv_gametype;
 cvar_t	*sv_pure;
 cvar_t	*sv_floodProtect;
 cvar_t	*sv_lanForceRate; // dedicated 1 (LAN) server forces local client rates to 99999 (bug #491)
-#ifndef STANDALONE
-cvar_t	*sv_strictAuth;
-#endif
-cvar_t	*sv_banFile;
 
 cvar_t *sv_levelTimeReset;
 
+#ifdef USE_BANS
+cvar_t	*sv_banFile;
 serverBan_t serverBans[SERVER_MAXBANS];
 int serverBansCount = 0;
+#endif
 
 /*
 =============================================================================
@@ -75,8 +75,8 @@ SV_ExpandNewlines
 Converts newlines to "\n" so a line prints nicer
 ===============
 */
-static char	*SV_ExpandNewlines( const char *in ) {
-	static	char	string[1024];
+static const char *SV_ExpandNewlines( const char *in ) {
+	static char string[MAX_STRING_CHARS*2];
 	int		l;
 
 	l = 0;
@@ -93,6 +93,7 @@ static char	*SV_ExpandNewlines( const char *in ) {
 
 	return string;
 }
+
 
 /*
 ======================
@@ -125,6 +126,7 @@ static int SV_ReplacePendingServerCommands( client_t *client, const char *cmd ) 
 	return qfalse;
 }
 #endif
+
 
 /*
 ======================
@@ -175,37 +177,35 @@ the client game module: "cp", "print", "chat", etc
 A NULL client will broadcast to all clients
 =================
 */
-void QDECL SV_SendServerCommand(client_t *cl, const char *fmt, ...) {
+void QDECL SV_SendServerCommand( client_t *cl, const char *fmt, ... ) {
 	va_list		argptr;
-	byte		message[MAX_MSGLEN];
+	char		message[MAX_STRING_CHARS+128]; // slightly larger than allowed, to detect overflows
 	client_t	*client;
-	int			j;
+	int			j, len;
 	
-	va_start (argptr,fmt);
-	Q_vsnprintf ((char *)message, sizeof(message), fmt,argptr);
-	va_end (argptr);
-
-	// Fix to http://aluigi.altervista.org/adv/q3msgboom-adv.txt
-	// The actual cause of the bug is probably further downstream
-	// and should maybe be addressed later, but this certainly
-	// fixes the problem for now
-	if ( strlen ((char *)message) > 1022 ) {
-		return;
-	}
+	va_start( argptr, fmt );
+	len = Q_vsnprintf( message, sizeof( message ), fmt, argptr );
+	va_end( argptr );
 
 	if ( cl != NULL ) {
-		SV_AddServerCommand( cl, (char *)message );
+		// outdated clients can't properly decode 1023-chars-long strings
+		// http://aluigi.altervista.org/adv/q3msgboom-adv.txt
+		if ( len <= 1022 || cl->longstr ) {
+			SV_AddServerCommand( cl, message );
+		}
 		return;
 	}
 
 	// hack to echo broadcast prints to console
-	if ( com_dedicated->integer && !strncmp( (char *)message, "print", 5) ) {
-		Com_Printf ("broadcast: %s\n", SV_ExpandNewlines((char *)message) );
+	if ( com_dedicated->integer && !strncmp( message, "print", 5 ) ) {
+		Com_Printf( "broadcast: %s\n", SV_ExpandNewlines( message ) );
 	}
 
-	// send the data to all relevent clients
-	for (j = 0, client = svs.clients; j < sv_maxclients->integer ; j++, client++) {
-		SV_AddServerCommand( client, (char *)message );
+	// send the data to all relevant clients
+	for ( j = 0, client = svs.clients; j < sv_maxclients->integer ; j++, client++ ) {
+		if ( len <= 1022 || client->longstr ) {
+			SV_AddServerCommand( client, message );
+		}
 	}
 }
 
@@ -359,11 +359,11 @@ leakyBucket_t outboundLeakyBucket;
 SVC_HashForAddress
 ================
 */
-static long SVC_HashForAddress( const netadr_t *address ) {
+static int SVC_HashForAddress( const netadr_t *address ) {
 	const byte	*ip = NULL;
-	size_t	size = 0;
+	int			size = 0;
+	int			hash = 0;
 	int			i;
-	long		hash = 0;
 
 	switch ( address->type ) {
 		case NA_IP:  ip = address->ipv._4; size = 4;  break;
@@ -372,7 +372,7 @@ static long SVC_HashForAddress( const netadr_t *address ) {
 	}
 
 	for ( i = 0; i < size; i++ ) {
-		hash += (long)( ip[ i ] ) * ( i + 119 );
+		hash += (int)( ip[ i ] ) * ( i + 119 );
 	}
 
 	hash = ( hash ^ ( hash >> 10 ) ^ ( hash >> 20 ) );
@@ -384,47 +384,81 @@ static long SVC_HashForAddress( const netadr_t *address ) {
 
 /*
 ================
+SVC_RelinkToHead
+================
+*/
+static void SVC_RelinkToHead( leakyBucket_t *bucket, int hash ) {
+
+	if ( bucket->prev != NULL ) {
+		bucket->prev->next = bucket->next;
+	} else {
+		return;
+	}
+
+	if ( bucket->next != NULL ) {
+		bucket->next->prev = bucket->prev;
+	}
+
+	bucket->next = bucketHashes[ hash ];
+	if ( bucketHashes[ hash ] != NULL ) {
+		bucketHashes[ hash ]->prev = bucket;
+	}
+
+	bucket->prev = NULL;
+	bucketHashes[ hash ] = bucket;
+}
+
+
+/*
+================
 SVC_BucketForAddress
 
 Find or allocate a bucket for an address
 ================
 */
 static leakyBucket_t *SVC_BucketForAddress( const netadr_t *address, int burst, int period ) {
-	leakyBucket_t	*bucket = NULL;
-	int				i;
-	long			hash = SVC_HashForAddress( address );
-	int				now = Sys_Milliseconds();
+	static leakyBucket_t dummy = { 0 };
+	static int		start = 0;
+	const int		hash = SVC_HashForAddress( address );
+	const int		now = Sys_Milliseconds();
+	leakyBucket_t	*bucket;
+	int				i, n;
 
-	for ( bucket = bucketHashes[ hash ]; bucket; bucket = bucket->next ) {
+	for ( bucket = bucketHashes[ hash ], n = 0; bucket; bucket = bucket->next, n++ ) {
 		switch ( bucket->type ) {
 			case NA_IP:
 				if ( memcmp( bucket->ipv._4, address->ipv._4, 4 ) == 0 ) {
+					if ( n > 8 ) {
+						SVC_RelinkToHead( bucket, hash );
+					}
 					return bucket;
 				}
 				break;
 
 			case NA_IP6:
 				if ( memcmp( bucket->ipv._6, address->ipv._6, 16 ) == 0 ) {
+					if ( n > 8 ) {
+						SVC_RelinkToHead( bucket, hash );
+					}
 					return bucket;
 				}
 				break;
 
 			default:
-				break;
+				return &dummy;
 		}
 	}
-
-	// make sure we will never use time 0
-	now = now ? now : 1;
 
 	for ( i = 0; i < MAX_BUCKETS; i++ ) {
 		int interval;
 
-		bucket = &buckets[ i ];
+		if ( start >= MAX_BUCKETS )
+			start = 0;
+		bucket = &buckets[ start++ ];
 		interval = now - bucket->lastTime;
 
 		// Reclaim expired buckets
-		if ( bucket->lastTime && (unsigned)interval > ( burst * period ) ) {
+		if ( bucket->type != NA_BAD && (unsigned)interval > ( bucket->burst * period ) ) {
 			if ( bucket->prev != NULL ) {
 				bucket->prev->next = bucket->next;
 			} else {
@@ -435,7 +469,7 @@ static leakyBucket_t *SVC_BucketForAddress( const netadr_t *address, int burst, 
 				bucket->next->prev = bucket->prev;
 			}
 
-			Com_Memset( bucket, 0, sizeof( leakyBucket_t ) );
+			bucket->type = NA_BAD;
 		}
 
 		if ( bucket->type == NA_BAD ) {
@@ -447,8 +481,9 @@ static leakyBucket_t *SVC_BucketForAddress( const netadr_t *address, int burst, 
 			}
 
 			bucket->lastTime = now;
-			bucket->burst = 0;
 			bucket->hash = hash;
+			bucket->burst = 0;
+			bucket->toxic = 0;
 
 			// Add to the head of the relevant hash chain
 			bucket->next = bucketHashes[ hash ];
@@ -490,12 +525,54 @@ qboolean SVC_RateLimit( leakyBucket_t *bucket, int burst, int period ) {
 
 		if ( bucket->burst < burst ) {
 			bucket->burst++;
-
 			return qfalse;
 		}
 	}
 
 	return qtrue;
+}
+
+
+/*
+================
+SVC_RateDrop
+================
+*/
+static void SVC_RateDrop( leakyBucket_t *bucket, int burst ) {
+	if ( bucket != NULL ) {
+		if ( bucket->toxic < 10000 )
+			++bucket->toxic;
+		bucket->burst = burst * bucket->toxic;
+		bucket->lastTime = Sys_Milliseconds();
+	}
+}
+
+
+/*
+================
+SVC_RateRestoreBurst
+================
+*/
+static void SVC_RateRestoreBurst( leakyBucket_t *bucket ) {
+	if ( bucket != NULL ) {
+		if ( bucket->burst > 0 ) {
+			bucket->burst--;
+		}
+	}
+}
+
+
+/*
+================
+SVC_RateRestoreToxic
+================
+*/
+static void SVC_RateRestoreToxic( leakyBucket_t *bucket ) {
+	if ( bucket != NULL ) {
+		if ( bucket->toxic > 0 ) {
+			bucket->toxic--;
+		}
+	}
 }
 
 
@@ -515,6 +592,46 @@ qboolean SVC_RateLimitAddress( const netadr_t *from, int burst, int period ) {
 
 /*
 ================
+SVC_RateRestoreAddress
+
+Decrease burst rate
+================
+*/
+void SVC_RateRestoreBurstAddress( const netadr_t *from, int burst, int period ) {
+	leakyBucket_t *bucket = SVC_BucketForAddress( from, burst, period );
+
+	SVC_RateRestoreBurst( bucket );
+}
+
+
+/*
+================
+SVC_RateRestoreToxicAddress
+
+Decrease toxicity
+================
+*/
+void SVC_RateRestoreToxicAddress( const netadr_t *from, int burst, int period ) {
+	leakyBucket_t *bucket = SVC_BucketForAddress( from, burst, period );
+
+	SVC_RateRestoreToxic( bucket );
+}
+
+
+/*
+================
+SVC_RateDropAddress
+================
+*/
+void SVC_RateDropAddress( const netadr_t *from, int burst, int period ) {
+	leakyBucket_t *bucket = SVC_BucketForAddress( from, burst, period );
+
+	SVC_RateDrop( bucket, burst );
+}
+
+
+/*
+================
 SVC_Status
 
 Responds with all the info that qplug or qspy can see about the server
@@ -524,7 +641,7 @@ the simple info query.
 */
 static void SVC_Status( const netadr_t *from ) {
 	char	player[MAX_NAME_LENGTH + 32]; // score + ping + name
-	char	status[1400]; // MAX_PACKETLEN
+	char	status[MAX_PACKETLEN];
 	char	*s;
 	int		i;
 	client_t	*cl;
@@ -578,7 +695,7 @@ static void SVC_Status( const netadr_t *from ) {
 			playerLength = Com_sprintf( player, sizeof( player ), "%i %i \"%s\"\n", 
 				ps->persistant[ PERS_SCORE ], cl->ping, cl->name );
 			
-			if ( statusLength + playerLength >= 1400-4 ) // MAX_PACKETLEN-4
+			if ( statusLength + playerLength >= MAX_PACKETLEN-4 )
 				break; // can't hold any more
 			
 			s = Q_stradd( s, player );
@@ -632,7 +749,7 @@ static void SVC_Info( const netadr_t *from ) {
 	 */
 
 	// A maximum challenge length of 128 should be more than plenty.
-	if ( strlen( Cmd_Argv ( 1 ) ) > 128 )
+	if ( strlen( Cmd_Argv( 1 ) ) > 128 )
 		return;
 
 	// don't count privateclients
@@ -646,7 +763,7 @@ static void SVC_Info( const netadr_t *from ) {
 		}
 	}
 
-	infostring[0] = 0;
+	infostring[0] = '\0';
 
 	// echo back the parameter to status. so servers can use it as a challenge
 	// to prevent timed spoofed reply packets that add ghost servers
@@ -673,13 +790,17 @@ static void SVC_Info( const netadr_t *from ) {
 
 /*
 ================
-SVC_FlushRedirect
-
+SV_FlushRedirect
 ================
 */
-static void SV_FlushRedirect( const char *outputbuf ) 
+static netadr_t redirectAddress; // for rcon return messages
+
+static void SV_FlushRedirect( const char *outputbuf )
 {
-	NET_OutOfBandPrint( NS_SERVER, &svs.redirectAddress, "print\n%s", outputbuf );
+	if ( *outputbuf )
+	{
+		NET_OutOfBandPrint( NS_SERVER, &redirectAddress, "print\n%s", outputbuf );
+	}
 }
 
 
@@ -692,14 +813,13 @@ Shift down the remaining args
 Redirect all printfs
 ===============
 */
-static void SVC_RemoteCommand( const netadr_t *from, msg_t *msg ) {
+static void SVC_RemoteCommand( const netadr_t *from ) {
+	static leakyBucket_t bucket;
 	qboolean	valid;
-	char		remaining[1024];
 	// TTimo - scaled down to accumulate, but not overflow anything network wise, print wise etc.
 	// (OOB messages are the bottleneck here)
-#define SV_OUTPUTBUF_LENGTH (1024 - 16)
-	char		sv_outputbuf[SV_OUTPUTBUF_LENGTH];
-	char *cmd_aux;
+	char		sv_outputbuf[1024 - 16];
+	const char	*cmd_aux, *pw;
 
 	// Prevent using rcon as an amplifier and make dictionary attacks impractical
 	if ( SVC_RateLimitAddress( from, 10, 1000 ) ) {
@@ -710,10 +830,12 @@ static void SVC_RemoteCommand( const netadr_t *from, msg_t *msg ) {
 		return;
 	}
 
-	if ( !sv_rconPassword->string[0] ||
-		strcmp (Cmd_Argv(1), sv_rconPassword->string) ) {
-		static leakyBucket_t bucket;
-
+	pw = Cmd_Argv( 1 );
+	if ( ( sv_rconPassword->string[0] && strcmp( pw, sv_rconPassword->string ) == 0 ) ||
+		( rconPassword2[0] && strcmp( pw, rconPassword2 ) == 0 ) ) {
+		valid = qtrue;
+		Com_Printf( "Rcon from %s: %s\n", NET_AdrToString( from ), Cmd_ArgsFrom( 2 ) );
+	} else {
 		// Make DoS via rcon impractical
 		if ( SVC_RateLimit( &bucket, 10, 1000 ) ) {
 			Com_DPrintf( "SVC_RemoteCommand: rate limit exceeded, dropping request\n" );
@@ -721,43 +843,45 @@ static void SVC_RemoteCommand( const netadr_t *from, msg_t *msg ) {
 		}
 
 		valid = qfalse;
-		Com_Printf ("Bad rcon from %s: %s\n", NET_AdrToString( from ), Cmd_ArgsFrom(2) );
-	} else {
-		valid = qtrue;
-		Com_Printf ("Rcon from %s: %s\n", NET_AdrToString( from ), Cmd_ArgsFrom(2) );
+		Com_Printf( "Bad rcon from %s: %s\n", NET_AdrToString( from ), Cmd_ArgsFrom( 2 ) );
 	}
 
 	// start redirecting all print outputs to the packet
-	svs.redirectAddress = *from;
-	Com_BeginRedirect (sv_outputbuf, SV_OUTPUTBUF_LENGTH, SV_FlushRedirect);
+	redirectAddress = *from;
+	Com_BeginRedirect( sv_outputbuf, sizeof( sv_outputbuf ), SV_FlushRedirect );
 
-	if ( !sv_rconPassword->string[0] ) {
-		Com_Printf ("No rconpassword set on the server.\n");
+	if ( !sv_rconPassword->string[0] && !rconPassword2[0] ) {
+		Com_Printf( "No rconpassword set on the server.\n" );
 	} else if ( !valid ) {
-		Com_Printf ("Bad rconpassword.\n");
+		Com_Printf( "Bad rconpassword.\n" );
 	} else {
-		remaining[0] = '\0';
-		
 		// https://zerowing.idsoftware.com/bugzilla/show_bug.cgi?id=543
 		// get the command directly, "rcon <pass> <command>" to avoid quoting issues
 		// extract the command by walking
 		// since the cmd formatting can fuckup (amount of spaces), using a dumb step by step parsing
 		cmd_aux = Cmd_Cmd();
-		cmd_aux+=4;
-		while(cmd_aux[0]==' ')
+		while ( *cmd_aux && *cmd_aux <= ' ' ) // skip whitespace
 			cmd_aux++;
-		while(cmd_aux[0] && cmd_aux[0]!=' ') // password
+		cmd_aux += 4; // "rcon"
+		while ( *cmd_aux == ' ' )
 			cmd_aux++;
-		while(cmd_aux[0]==' ')
+		if ( *cmd_aux == '"' ) {
 			cmd_aux++;
-		
-		Q_strcat( remaining, sizeof(remaining), cmd_aux);
-		
-		Cmd_ExecuteString (remaining);
+			while ( *cmd_aux && *cmd_aux != '"' ) // quoted password
+				cmd_aux++;
+			if ( *cmd_aux == '"' )
+				cmd_aux++;
+		} else {
+			while ( *cmd_aux && *cmd_aux != ' ' ) // password
+				cmd_aux++;
+		}
+		while ( *cmd_aux == ' ' )
+			cmd_aux++;
 
+		Cmd_ExecuteString( cmd_aux );
 	}
 
-	Com_EndRedirect ();
+	Com_EndRedirect();
 }
 
 
@@ -773,12 +897,12 @@ connectionless packets.
 */
 static void SV_ConnectionlessPacket( const netadr_t *from, msg_t *msg ) {
 	const char *s;
-	char	*c;
+	const char *c;
 
 	MSG_BeginReadingOOB( msg );
 	MSG_ReadLong( msg );		// skip the -1 marker
 
-	if ( !Q_strncmp( "connect", (char *) &msg->data[4], 7 ) ) {
+	if ( !memcmp( "connect ", msg->data + 4, 8 ) ) {
 		if ( msg->cursize > MAX_INFO_STRING*2 ) { // if we assume 200% compression ratio on userinfo
 			if ( com_developer->integer ) {
 				Com_Printf( "%s : connect packet is too long - %i\n", NET_AdrToString( from ), msg->cursize );
@@ -797,6 +921,15 @@ static void SV_ConnectionlessPacket( const netadr_t *from, msg_t *msg ) {
 		Com_Printf( "SV packet %s : %s\n", NET_AdrToString( from ), c );
 	}
 
+	if ( !Q_stricmp(c, "rcon") ) {
+		SVC_RemoteCommand( from );
+		return;
+	}
+
+	if ( !com_sv_running->integer ) {
+		return;
+	}
+
 	if (!Q_stricmp(c, "getstatus")) {
 		SVC_Status( from );
 	} else if (!Q_stricmp(c, "getinfo")) {
@@ -809,8 +942,6 @@ static void SV_ConnectionlessPacket( const netadr_t *from, msg_t *msg ) {
 	} else if (!Q_stricmp(c, "ipAuthorize")) {
 		// removed from codebase since stateless challenges
 #endif
-	} else if (!Q_stricmp(c, "rcon")) {
-		SVC_RemoteCommand( from, msg );
 	} else if (!Q_stricmp(c, "disconnect")) {
 		// if a client starts up a local server, we may see some spurious
 		// server disconnect messages when their new server sees our final
@@ -835,8 +966,11 @@ void SV_PacketEvent( const netadr_t *from, msg_t *msg ) {
 	client_t	*cl;
 	int			qport;
 
+	if ( msg->cursize < 6 ) // too short for anything
+		return;
+
 	// check for connectionless packet (0xffffffff) first
-	if ( msg->cursize >= 4 && *(int *)msg->data == -1) {
+	if ( *(int *)msg->data == -1 ) {
 		SV_ConnectionlessPacket( from, msg );
 		return;
 	}
@@ -861,16 +995,15 @@ void SV_PacketEvent( const netadr_t *from, msg_t *msg ) {
 			continue;
 		}
 
-		// the IP port can't be used to differentiate them, because
-		// some address translating routers periodically change UDP
-		// port assignments
-		if (cl->netchan.remoteAddress.port != from->port) {
-			Com_Printf( "SV_PacketEvent: fixing up a translated port\n" );
-			cl->netchan.remoteAddress.port = from->port;
-		}
-
 		// make sure it is a valid, in sequence packet
 		if (SV_Netchan_Process(cl, msg)) {
+			// the IP port can't be used to differentiate clients, because
+			// some address translating routers periodically change UDP
+			// port assignments
+			if (cl->netchan.remoteAddress.port != from->port) {
+				Com_Printf( "SV_PacketEvent: fixing up a translated port\n" );
+				cl->netchan.remoteAddress.port = from->port;
+			}
 			// zombie clients still need to do the Netchan_Process
 			// to make sure they don't need to retransmit the final
 			// reliable message, but they don't do any other processing
@@ -878,8 +1011,8 @@ void SV_PacketEvent( const netadr_t *from, msg_t *msg ) {
 				cl->lastPacketTime = svs.time;	// don't timeout
 				SV_ExecuteClientMessage( cl, msg );
 			}
+			return;
 		}
-		return;
 	}
 }
 
@@ -972,11 +1105,18 @@ static void SV_CheckTimeouts( void ) {
 			cl->state = CS_FREE;	// can now be reused
 			continue;
 		}
+		if ( cl->justConnected && svs.time - cl->lastPacketTime > 4000 ) {
+			// for real client 4 seconds is more than enough to respond
+			SVC_RateDropAddress( &cl->netchan.remoteAddress, 10, 1000 ); // enforce burst with progressive multiplier
+			SV_DropClient( cl, NULL ); // drop silently
+			cl->state = CS_FREE;
+			continue;
+		}
 		if ( cl->state >= CS_CONNECTED && cl->lastPacketTime < droppoint ) {
 			// wait several frames so a debugger session doesn't
 			// cause a timeout
 			if ( ++cl->timeoutCount > 5 ) {
-				SV_DropClient (cl, "timed out"); 
+				SV_DropClient( cl, "timed out" );
 				cl->state = CS_FREE;	// don't bother with zombie state
 			}
 		} else {
@@ -1052,6 +1192,39 @@ int SV_FrameMsec( void )
 
 /*
 ==================
+SV_TrackCvarChanges
+==================
+*/
+void SV_TrackCvarChanges( void )
+{
+	client_t *cl;
+	int i;
+
+	if ( sv_maxRate->integer && sv_maxRate->integer < 1000 ) {
+		Cvar_Set( "sv_maxRate", "1000" );
+		Com_DPrintf( "sv_maxRate adjusted to 1000\n" );
+	}
+
+	if ( sv_minRate->integer && sv_minRate->integer < 1000 ) {
+		Cvar_Set( "sv_minRate", "1000" );
+		Com_DPrintf( "sv_minRate adjusted to 1000\n" );
+	}
+
+	Cvar_ResetGroup( CVG_SERVER, qfalse );
+
+	if ( sv.state == SS_DEAD || !svs.clients )
+		return;
+
+	for ( i = 0, cl = svs.clients; i < sv_maxclients->integer; i++, cl++ ) {
+		if ( cl->state >= CS_CONNECTED ) {
+			SV_UserinfoChanged( cl, qfalse );
+		}
+	}
+}
+
+
+/*
+==================
 SV_Frame
 
 Player movement occurs as a result of packet events, which
@@ -1063,9 +1236,12 @@ void SV_Frame( int msec ) {
 	int		startTime;
 	int		i, n;
 
+	if ( Cvar_CheckGroup( CVG_SERVER ) )
+		SV_TrackCvarChanges(); // update rate settings, etc.
+
 	// the menu kills the server with this cvar
 	if ( sv_killserver->integer ) {
-		SV_Shutdown ("Server was killed");
+		SV_Shutdown( "Server was killed" );
 		Cvar_Set( "sv_killserver", "0" );
 		return;
 	}
@@ -1189,6 +1365,7 @@ void SV_Frame( int msec ) {
 	SV_MasterHeartbeat(HEARTBEAT_FOR_MASTER);
 }
 
+
 /*
 ====================
 SV_RateMsec
@@ -1201,39 +1378,25 @@ a client based on its rate settings
 #define UDPIP_HEADER_SIZE 28
 #define UDPIP6_HEADER_SIZE 48
 
-int SV_RateMsec(client_t *client)
+int SV_RateMsec( const client_t *client )
 {
 	int rate, rateMsec;
 	int messageSize;
 	
+	if ( !client->rate )
+		return 0;
+
 	messageSize = client->netchan.lastSentSize;
-	rate = client->rate;
 
-	if(sv_maxRate->integer)
-	{
-		if(sv_maxRate->integer < 1000)
-			Cvar_Set( "sv_MaxRate", "1000" );
-		if(sv_maxRate->integer < rate)
-			rate = sv_maxRate->integer;
-	}
-
-	if(sv_minRate->integer)
-	{
-		if(sv_minRate->integer < 1000)
-			Cvar_Set("sv_minRate", "1000");
-		if(sv_minRate->integer > rate)
-			rate = sv_minRate->integer;
-	}
-
-	if(client->netchan.remoteAddress.type == NA_IP6)
+	if ( client->netchan.remoteAddress.type == NA_IP6 )
 		messageSize += UDPIP6_HEADER_SIZE;
 	else
 		messageSize += UDPIP_HEADER_SIZE;
 		
-	rateMsec = messageSize * 1000 / ((int) (rate * com_timescale->value));
+	rateMsec = messageSize * 1000 / ((int) (client->rate * com_timescale->value));
 	rate = Sys_Milliseconds() - client->netchan.lastSentTime;
 	
-	if(rate > rateMsec)
+	if ( rate > rateMsec )
 		return 0;
 	else
 		return rateMsec - rate;

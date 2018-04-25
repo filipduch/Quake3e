@@ -36,6 +36,7 @@ cvar_t	*rconAddress;
 cvar_t	*cl_timeout;
 cvar_t	*cl_maxpackets;
 cvar_t	*cl_packetdup;
+cvar_t	*cl_autoNudge;
 cvar_t	*cl_timeNudge;
 cvar_t	*cl_showTimeDelta;
 
@@ -149,6 +150,8 @@ static void CL_Ping_f( void );
 static void CL_InitRef( void );
 static void CL_ShutdownRef( qboolean unloadDLL );
 static void CL_InitGLimp_Cvars( void );
+
+static void CL_NextDemo( void );
 
 /*
 ===============
@@ -944,7 +947,7 @@ Called when a demo or cinematic finishes
 If the "nextdemo" cvar is set, that command will be issued
 ==================
 */
-void CL_NextDemo( void ) {
+static void CL_NextDemo( void ) {
 	char v[ MAX_CVAR_VALUE_STRING ];
 
 	Cvar_VariableStringBuffer( "nextdemo", v, sizeof( v ) ); 
@@ -1101,7 +1104,7 @@ CL_ClearState
 Called before parsing a gamestate
 =====================
 */
-void CL_ClearState (void) {
+void CL_ClearState( void ) {
 
 //	S_StopAllSounds();
 
@@ -1298,6 +1301,11 @@ void CL_ForwardCommandToServer( const char *string ) {
 		return;
 	}
 
+	// no userinfo updates from command line
+	if ( !strcmp( cmd, "userinfo" ) ) {
+		return;
+	}
+
 	if ( clc.demoplaying || cls.state < CA_CONNECTED || cmd[0] == '+' ) {
 		Com_Printf( "Unknown command \"%s" S_COLOR_WHITE "\"\n", cmd );
 		return;
@@ -1390,7 +1398,7 @@ in anyway.
 ===================
 */
 #ifndef STANDALONE
-void CL_RequestAuthorization( void ) {
+static void CL_RequestAuthorization( void ) {
 	char	nums[64];
 	int		i, j, l;
 	cvar_t	*fs;
@@ -1454,11 +1462,12 @@ static void CL_ForwardToServer_f( void ) {
 		Com_Printf ("Not connected to a server.\n");
 		return;
 	}
-	
+
+	if ( Cmd_Argc() <= 1 || strcmp( Cmd_Argv( 1 ), "userinfo" ) == 0 )
+		return;
+
 	// don't forward the first argument
-	if ( Cmd_Argc() > 1 ) {
-		CL_AddReliableCommand( Cmd_Args(), qfalse );
-	}
+	CL_AddReliableCommand( Cmd_ArgsFrom( 1 ), qfalse );
 }
 
 
@@ -1499,7 +1508,7 @@ void CL_Disconnect_f( void ) {
 CL_Reconnect_f
 ================
 */
-void CL_Reconnect_f( void ) {
+static void CL_Reconnect_f( void ) {
 	if ( cl_reconnectArgs[0] == '\0' )
 		return;
 	Cvar_Set( "ui_singlePlayerActive", "0" );
@@ -1512,7 +1521,7 @@ void CL_Reconnect_f( void ) {
 CL_Connect_f
 ================
 */
-void CL_Connect_f( void ) {
+static void CL_Connect_f( void ) {
 	netadrtype_t family;
 	netadr_t	addr;
 	char	buffer[ sizeof(cls.servername) ];  // same length as cls.servername
@@ -1603,7 +1612,7 @@ void CL_Connect_f( void ) {
 	Q_strncpyz( cls.servername, server, sizeof( cls.servername ) );
 
 	// save arguments for reconnect
-	strcpy( cl_reconnectArgs, cmd_args );
+	Q_strncpyz( cl_reconnectArgs, cmd_args, sizeof( cl_reconnectArgs ) );
 
 	// copy resolved address 
 	clc.serverAddress = addr;
@@ -1640,7 +1649,7 @@ void CL_Connect_f( void ) {
 	Cvar_Set( "cl_currentServerAddress", server );
 }
 
-#define MAX_RCON_MESSAGE 1024
+#define MAX_RCON_MESSAGE (MAX_STRING_CHARS+4)
 
 /*
 ==================
@@ -1668,13 +1677,32 @@ CL_Rcon_f
   an unconnected command.
 =====================
 */
-void CL_Rcon_f( void ) {
-	char	message[MAX_RCON_MESSAGE];
+static void CL_Rcon_f( void ) {
+	char message[MAX_RCON_MESSAGE];
+	const char *sp;
+	int len;
 
 	if ( !rcon_client_password->string[0] ) {
-		Com_Printf ("You must set 'rconpassword' before\n"
-					"issuing an rcon command.\n");
+		Com_Printf( "You must set 'rconpassword' before\n"
+			"issuing an rcon command.\n" );
 		return;
+	}
+
+	if ( cls.state >= CA_CONNECTED ) {
+		rcon_address = clc.netchan.remoteAddress;
+	} else {
+		if ( !rconAddress->string[0] ) {
+			Com_Printf( "You must either be connected,\n"
+				"or set the 'rconAddress' cvar\n"
+				"to issue rcon commands\n" );
+			return;
+		}
+		if ( !NET_StringToAdr( rconAddress->string, &rcon_address, NA_UNSPEC ) ) {
+			return;
+		}
+		if ( rcon_address.port == 0 ) {
+			rcon_address.port = BigShort( PORT_SERVER );
+		}
 	}
 
 	message[0] = -1;
@@ -1683,31 +1711,15 @@ void CL_Rcon_f( void ) {
 	message[3] = -1;
 	message[4] = '\0';
 
-	Q_strcat (message, MAX_RCON_MESSAGE, "rcon ");
+	// we may need to quote password if it contains spaces
+	sp = strchr( rcon_client_password->string, ' ' );
 
-	Q_strcat (message, MAX_RCON_MESSAGE, rcon_client_password->string);
-	Q_strcat (message, MAX_RCON_MESSAGE, " ");
+	len = Com_sprintf( message+4, sizeof( message )-4,
+		sp ? "rcon \"%s\" %s" : "rcon %s %s",
+		rcon_client_password->string,
+		Cmd_Cmd() + 5 ) + 4 + 1; // including OOB marker and '\0'
 
-	// https://zerowing.idsoftware.com/bugzilla/show_bug.cgi?id=543
-	Q_strcat (message, MAX_RCON_MESSAGE, Cmd_Cmd()+5);
-
-	if ( cls.state >= CA_CONNECTED ) {
-		rcon_address = clc.netchan.remoteAddress;
-	} else {
-		if (!strlen(rconAddress->string)) {
-			Com_Printf ("You must either be connected,\n"
-						"or set the 'rconAddress' cvar\n"
-						"to issue rcon commands\n");
-
-			return;
-		}
-		NET_StringToAdr( rconAddress->string, &rcon_address, NA_UNSPEC );
-		if (rcon_address.port == 0) {
-			rcon_address.port = BigShort (PORT_SERVER);
-		}
-	}
-	
-	NET_SendPacket( NS_CLIENT, strlen(message)+1, message, &rcon_address );
+	NET_SendPacket( NS_CLIENT, len, message, &rcon_address );
 }
 
 
@@ -1716,9 +1728,12 @@ void CL_Rcon_f( void ) {
 CL_SendPureChecksums
 =================
 */
-void CL_SendPureChecksums( void ) {
-	char cMsg[ MAX_STRING_CHARS ];
+static void CL_SendPureChecksums( void ) {
+	char cMsg[ MAX_STRING_CHARS-1 ];
 	int len;
+
+	if ( !cl_connectedToPureServer || clc.demoplaying )
+		return;
 
 	// if we are pure we need to send back a command with our referenced pk3 checksums
 	len = sprintf( cMsg, "cp %d ", cl.serverId );
@@ -1795,9 +1810,7 @@ static void CL_Vid_Restart( void ) {
 		cls.cgameStarted = qtrue;
 		CL_InitCGame();
 		// send pure checksums
-		if ( !clc.demoplaying ) {
-			CL_SendPureChecksums();
-		}
+		CL_SendPureChecksums();
 	}
 
 	cls.startCgame = qfalse;
@@ -1811,7 +1824,7 @@ CL_Vid_Restart_f
 Wrapper for CL_Vid_Restart
 =================
 */
-void CL_Vid_Restart_f( void ) {
+static void CL_Vid_Restart_f( void ) {
 
 	 // hack for OSP mod: do not allow vid restart right after cgame init
 	if ( cls.lastVidRestart )
@@ -1829,7 +1842,7 @@ CL_Snd_Restart
 Restart the sound subsystem
 =================
 */
-void CL_Snd_Shutdown( void )
+static void CL_Snd_Shutdown( void )
 {
 	S_StopAllSounds();
 	S_Shutdown();
@@ -1846,7 +1859,7 @@ The cgame and game must also be forced to restart because
 handles will be invalid
 =================
 */
-void CL_Snd_Restart_f( void ) 
+static void CL_Snd_Restart_f( void )
 {
 	CL_Snd_Shutdown();
 	// sound will be reinitialized by vid_restart
@@ -1869,8 +1882,8 @@ void CL_OpenedPK3List_f( void ) {
 CL_PureList_f
 ==================
 */
-void CL_ReferencedPK3List_f( void ) {
-	Com_Printf("Referenced PK3 Names: %s\n", FS_ReferencedPakNames());
+static void CL_ReferencedPK3List_f( void ) {
+	Com_Printf( "Referenced PK3 Names: %s\n", FS_ReferencedPakNames() );
 }
 
 
@@ -1879,7 +1892,7 @@ void CL_ReferencedPK3List_f( void ) {
 CL_Configstrings_f
 ==================
 */
-void CL_Configstrings_f( void ) {
+static void CL_Configstrings_f( void ) {
 	int		i;
 	int		ofs;
 
@@ -1969,7 +1982,7 @@ CL_DownloadsComplete
 Called when all downloading has been completed
 =================
 */
-void CL_DownloadsComplete( void ) {
+static void CL_DownloadsComplete( void ) {
 
 #ifdef USE_CURL
 	// if we downloaded with cURL
@@ -2050,7 +2063,7 @@ Requests a file to download from the server.  Stores it in the current
 game directory.
 =================
 */
-void CL_BeginDownload( const char *localName, const char *remoteName ) {
+static void CL_BeginDownload( const char *localName, const char *remoteName ) {
 
 	Com_DPrintf("***** CL_BeginDownload *****\n"
 				"Localname: %s\n"
@@ -2114,10 +2127,10 @@ void CL_NextDownload( void )
 			return;
 		}
 
-		*s++ = 0;
+		*s++ = '\0';
 		localName = s;
 		if ( (s = strchr(s, '@')) != NULL )
-			*s++ = 0;
+			*s++ = '\0';
 		else
 			s = localName + strlen(localName); // point at the null byte
 
@@ -2209,7 +2222,7 @@ void CL_InitDownloads( void ) {
 			// if autodownloading is not enabled on the server
 			cls.state = CA_CONNECTED;
 
-			*clc.downloadTempName = *clc.downloadName = 0;
+			*clc.downloadTempName = *clc.downloadName = '\0';
 			Cvar_Set( "cl_downloadName", "" );
 
 			CL_NextDownload();
@@ -2561,11 +2574,15 @@ static void CL_ServersResponsePacket( const netadr_t* from, msg_t *msg, qboolean
 CL_ConnectionlessPacket
 
 Responses to broadcasts, etc
+
+return true only for commands indicating that our server is alive
+or connection sequence is going into the right way
 =================
 */
-static void CL_ConnectionlessPacket( const netadr_t *from, msg_t *msg ) {
+static qboolean CL_ConnectionlessPacket( const netadr_t *from, msg_t *msg ) {
+	qboolean fromserver;
 	const char *s;
-	char	*c;
+	const char *c;
 	int challenge = 0;
 
 	MSG_BeginReadingOOB( msg );
@@ -2589,8 +2606,8 @@ static void CL_ConnectionlessPacket( const netadr_t *from, msg_t *msg ) {
 	
 		if ( cls.state != CA_CONNECTING )
 		{
-			Com_DPrintf("Unwanted challenge response received. Ignored.\n");
-			return;
+			Com_DPrintf( "Unwanted challenge response received. Ignored.\n" );
+			return qfalse;
 		}
 		
 		c = Cmd_Argv( 2 );
@@ -2622,7 +2639,7 @@ static void CL_ConnectionlessPacket( const netadr_t *from, msg_t *msg ) {
 				if( !*c || challenge != clc.challenge )
 				{
 					Com_DPrintf( "Challenge response received from unexpected source. Ignored.\n" );
-					return;
+					return qfalse;
 				}
 			}
 		}
@@ -2630,12 +2647,12 @@ static void CL_ConnectionlessPacket( const netadr_t *from, msg_t *msg ) {
 		{
 			if( !*c || challenge != clc.challenge )
 			{
-				Com_Printf("Bad challenge for challengeResponse. Ignored.\n");
-				return;
+				Com_Printf( "Bad challenge for challengeResponse. Ignored.\n" );
+				return qfalse;
 			}
 		}
 
-		// start sending challenge response instead of challenge request packets
+		// start sending connect instead of challenge request packets
 		clc.challenge = atoi(Cmd_Argv(1));
 		cls.state = CA_CHALLENGING;
 		clc.connectPacketCount = 0;
@@ -2644,23 +2661,23 @@ static void CL_ConnectionlessPacket( const netadr_t *from, msg_t *msg ) {
 		// take this address as the new server address.  This allows
 		// a server proxy to hand off connections to multiple servers
 		clc.serverAddress = *from;
-		Com_DPrintf ("challengeResponse: %d\n", clc.challenge);
-		return;
+		Com_DPrintf( "challengeResponse: %d\n", clc.challenge );
+		return qtrue;
 	}
 
 	// server connection
 	if ( !Q_stricmp(c, "connectResponse") ) {
 		if ( cls.state >= CA_CONNECTED ) {
-			Com_Printf ("Dup connect received.  Ignored.\n");
-			return;
+			Com_Printf( "Dup connect received. Ignored.\n" );
+			return qfalse;
 		}
 		if ( cls.state != CA_CHALLENGING ) {
-			Com_Printf ("connectResponse packet while not connecting. Ignored.\n");
-			return;
+			Com_Printf( "connectResponse packet while not connecting. Ignored.\n" );
+			return qfalse;
 		}
 		if ( !NET_CompareAdr( from, &clc.serverAddress ) ) {
 			Com_Printf( "connectResponse from wrong address. Ignored.\n" );
-			return;
+			return qfalse;
 		}
 
 		if ( !clc.compat )
@@ -2672,13 +2689,13 @@ static void CL_ConnectionlessPacket( const netadr_t *from, msg_t *msg ) {
 			else
 			{
 				Com_Printf("Bad connectResponse received. Ignored.\n");
-				return;
+				return qfalse;
 			}
 			
 			if(challenge != clc.challenge)
 			{
 				Com_Printf("ConnectResponse with bad challenge received. Ignored.\n");
-				return;
+				return qfalse;
 			}
 		}
 
@@ -2687,66 +2704,67 @@ static void CL_ConnectionlessPacket( const netadr_t *from, msg_t *msg ) {
 
 		cls.state = CA_CONNECTED;
 		clc.lastPacketSentTime = -9999;		// send first packet immediately
-		return;
+		return qtrue;
 	}
 
 	// server responding to an info broadcast
 	if ( !Q_stricmp(c, "infoResponse") ) {
 		CL_ServerInfoPacket( from, msg );
-		return;
+		return qfalse;
 	}
 
 	// server responding to a get playerlist
 	if ( !Q_stricmp(c, "statusResponse") ) {
 		CL_ServerStatusResponse( from, msg );
-		return;
+		return qfalse;
 	}
 
 	// echo request from server
 	if ( !Q_stricmp(c, "echo") ) {
 		// NOTE: we may have to add exceptions for auth and update servers
-		if ( NET_CompareAdr( from, &clc.serverAddress ) || NET_CompareAdr( from, &rcon_address ) ) {
+		if ( (fromserver = NET_CompareAdr( from, &clc.serverAddress )) != qfalse || NET_CompareAdr( from, &rcon_address ) ) {
 			NET_OutOfBandPrint( NS_CLIENT, from, "%s", Cmd_Argv(1) );
 		}
-		return;
+		return fromserver;
 	}
 
 	// cd check
 	if ( !Q_stricmp(c, "keyAuthorize") ) {
 		// we don't use these now, so dump them on the floor
-		return;
+		return qfalse;
 	}
 
 	// global MOTD from id
 	if ( !Q_stricmp(c, "motd") ) {
 		CL_MotdPacket( from );
-		return;
+		return qfalse;
 	}
 
 	// print string from server
 	if ( !Q_stricmp(c, "print") ) {
 		// NOTE: we may have to add exceptions for auth and update servers
-		if ( NET_CompareAdr( from, &clc.serverAddress ) || NET_CompareAdr( from, &rcon_address ) ) {
+		if ( (fromserver = NET_CompareAdr( from, &clc.serverAddress )) != qfalse || NET_CompareAdr( from, &rcon_address ) ) {
 			s = MSG_ReadString( msg );
 			Q_strncpyz( clc.serverMessage, s, sizeof( clc.serverMessage ) );
 			Com_Printf( "%s", s );
 		}
-		return;
+		return fromserver;
 	}
 
 	// list of servers sent back by a master server (classic)
 	if ( !Q_strncmp(c, "getserversResponse", 18) ) {
 		CL_ServersResponsePacket( from, msg, qfalse );
-		return;
+		return qfalse;
 	}
 
 	// list of servers sent back by a master server (extended)
 	if ( !Q_strncmp(c, "getserversExtResponse", 21) ) {
 		CL_ServersResponsePacket( from, msg, qtrue );
-		return;
+		return qfalse;
 	}
 
-	Com_DPrintf ("Unknown connectionless packet command.\n");
+	Com_DPrintf( "Unknown connectionless packet command.\n" );
+	return qfalse;
 }
 
 
@@ -2760,20 +2778,19 @@ A packet has arrived from the main event loop
 void CL_PacketEvent( const netadr_t *from, msg_t *msg ) {
 	int		headerBytes;
 
-	clc.lastPacketTime = cls.realtime; // -EC- FIXME: move down?
+	if ( msg->cursize < 5 ) {
+		Com_DPrintf( "%s: Runt packet\n", NET_AdrToStringwPort( from ) );
+		return;
+	}
 
-	if ( msg->cursize >= 4 && *(int *)msg->data == -1 ) {
-		CL_ConnectionlessPacket( from, msg );
+	if ( *(int *)msg->data == -1 ) {
+		if ( CL_ConnectionlessPacket( from, msg ) )
+			clc.lastPacketTime = cls.realtime;
 		return;
 	}
 
 	if ( cls.state < CA_CONNECTED ) {
 		return;		// can't be a valid sequenced packet
-	}
-
-	if ( msg->cursize < 4 ) {
-		Com_Printf ("%s: Runt packet\n", NET_AdrToStringwPort( from ));
-		return;
 	}
 
 	//
@@ -3599,8 +3616,11 @@ void CL_Init( void ) {
 	cl_timeout = Cvar_Get( "cl_timeout", "200", 0 );
 	Cvar_CheckRange( cl_timeout, "5", NULL, CV_INTEGER );
 
-	cl_timeNudge = Cvar_Get ("cl_timeNudge", "0", CVAR_TEMP );
+	cl_autoNudge = Cvar_Get( "cl_autoNudge", "0", CVAR_TEMP );
+	Cvar_CheckRange( cl_autoNudge, "0", "1", CV_FLOAT );
+	cl_timeNudge = Cvar_Get( "cl_timeNudge", "0", CVAR_TEMP );
 	Cvar_CheckRange( cl_timeNudge, "-30", "30", CV_INTEGER );
+
 	cl_shownet = Cvar_Get ("cl_shownet", "0", CVAR_TEMP );
 	cl_showSend = Cvar_Get ("cl_showSend", "0", CVAR_TEMP );
 	cl_showTimeDelta = Cvar_Get ("cl_showTimeDelta", "0", CVAR_TEMP );
@@ -3918,7 +3938,7 @@ static void CL_ServerInfoPacket( const netadr_t *from, msg_t *msg ) {
 
 	// if this isn't the correct protocol version, ignore it
 	prot = atoi( Info_ValueForKey( infoString, "protocol" ) );
-	if ( prot != PROTOCOL_VERSION ) {
+	if ( prot != PROTOCOL_VERSION && prot != NEW_PROTOCOL_VERSION ) {
 		Com_DPrintf( "Different protocol info packet: %s\n", infoString );
 		return;
 	}
@@ -4238,6 +4258,10 @@ static void CL_LocalServers_f( void ) {
 /*
 ==================
 CL_GlobalServers_f
+
+Originally master 0 was Internet and master 1 was MPlayer.
+ioquake3 2008; added support for requesting five separate master servers using 0-4.
+ioquake3 2017; made master 0 fetch all master servers and 1-5 request a single master server.
 ==================
 */
 static void CL_GlobalServers_f( void ) {
@@ -4245,15 +4269,37 @@ static void CL_GlobalServers_f( void ) {
 	int			count, i, masterNum;
 	char		command[1024];
 	const char	*masteraddress;
-	char		*cmdname;
 	
-	if ( (count = Cmd_Argc()) < 3 || (masterNum = atoi(Cmd_Argv(1))) < 0 || masterNum > MAX_MASTER_SERVERS - 1 )
+	if ( (count = Cmd_Argc()) < 3 || (masterNum = atoi(Cmd_Argv(1))) < 0 || masterNum > MAX_MASTER_SERVERS )
 	{
-		Com_Printf( "usage: globalservers <master# 0-%d> <protocol> [keywords]\n", MAX_MASTER_SERVERS - 1 );
-		return;	
+		Com_Printf( "usage: globalservers <master# 0-%d> <protocol> [keywords]\n", MAX_MASTER_SERVERS );
+		return;
 	}
 
-	sprintf(command, "sv_master%d", masterNum + 1);
+	// request from all master servers
+	if ( masterNum == 0 ) {
+		int numAddress = 0;
+
+		for ( i = 1; i <= MAX_MASTER_SERVERS; i++ ) {
+			sprintf( command, "sv_master%d", i );
+			masteraddress = Cvar_VariableString( command );
+
+			if ( !*masteraddress )
+				continue;
+
+			numAddress++;
+
+			Com_sprintf( command, sizeof( command ), "globalservers %d %s %s\n", i, Cmd_Argv( 2 ), Cmd_ArgsFrom( 3 ) );
+			Cbuf_AddText( command );
+		}
+
+		if ( !numAddress ) {
+			Com_Printf( "CL_GlobalServers_f: Error: No master server addresses.\n");
+		}
+		return;
+	}
+
+	sprintf( command, "sv_master%d", masterNum );
 	masteraddress = Cvar_VariableString( command );
 	
 	if ( !*masteraddress )
@@ -4267,35 +4313,42 @@ static void CL_GlobalServers_f( void ) {
 
 	i = NET_StringToAdr( masteraddress, &to, NA_UNSPEC );
 	
-	if ( !i )
+	if ( i == 0 )
 	{
-		Com_Printf( "CL_GlobalServers_f: Error: could not resolve address of master %s\n", masteraddress);
+		Com_Printf( "CL_GlobalServers_f: Error: could not resolve address of master %s\n", masteraddress );
 		return;	
 	}
 	else if ( i == 2 )
 		to.port = BigShort( PORT_MASTER );
 
-	Com_Printf( "Requesting servers from master %s...\n", masteraddress );
+	Com_Printf( "Requesting servers from %s (%s)...\n", masteraddress, NET_AdrToStringwPort( &to ) );
 
 	cls.numglobalservers = -1;
 	cls.pingUpdateSource = AS_GLOBAL;
 
 	// Use the extended query for IPv6 masters
-	if (to.type == NA_IP6 || to.type == NA_MULTICAST6)
+	if ( to.type == NA_IP6 || to.type == NA_MULTICAST6 )
 	{
-		cmdname = "getserversExt " GAMENAME_FOR_MASTER;
-
-		// TODO: test if we only have an IPv6 connection. If it's the case,
-		//       request IPv6 servers only by appending " ipv6" to the command
+		int v4enabled = Cvar_VariableIntegerValue( "net_enabled" ) & NET_ENABLEV4;
+		
+		if ( v4enabled )
+		{
+			Com_sprintf( command, sizeof( command ), "getserversExt %s %s",
+				GAMENAME_FOR_MASTER, Cmd_Argv(2) );
+		}
+		else
+		{
+			Com_sprintf( command, sizeof( command ), "getserversExt %s %s ipv6",
+				GAMENAME_FOR_MASTER, Cmd_Argv(2) );
+		}
 	}
-	else
-		cmdname = "getservers";
-	Com_sprintf( command, sizeof(command), "%s %s", cmdname, Cmd_Argv(2) );
+	else 
+		Com_sprintf( command, sizeof( command ), "getservers %s", Cmd_Argv(2) );
 
-	for (i=3; i < count; i++)
+	for ( i = 3; i < count; i++ )
 	{
-		Q_strcat(command, sizeof(command), " ");
-		Q_strcat(command, sizeof(command), Cmd_Argv(i));
+		Q_strcat( command, sizeof( command ), " " );
+		Q_strcat( command, sizeof( command ), Cmd_Argv( i ) );
 	}
 
 	NET_OutOfBandPrint( NS_SERVER, &to, "%s", command );
@@ -4570,14 +4623,14 @@ qboolean CL_UpdateVisiblePings_f(int source) {
 						status = qtrue;
 						for (j = 0; j < MAX_PINGREQUESTS; j++) {
 							if (!cl_pinglist[j].adr.port) {
+								memcpy(&cl_pinglist[j].adr, &server[i].adr, sizeof(netadr_t));
+								cl_pinglist[j].start = Sys_Milliseconds();
+								cl_pinglist[j].time = 0;
+								NET_OutOfBandPrint(NS_CLIENT, &cl_pinglist[j].adr, "getinfo xxx");
+								slots++;
 								break;
 							}
 						}
-						memcpy(&cl_pinglist[j].adr, &server[i].adr, sizeof(netadr_t));
-						cl_pinglist[j].start = Sys_Milliseconds();
-						cl_pinglist[j].time = 0;
-						NET_OutOfBandPrint( NS_CLIENT, &cl_pinglist[j].adr, "getinfo xxx" );
-						slots++;
 					}
 				}
 				// if the server has a ping higher than cl_maxPing or
@@ -4699,14 +4752,12 @@ qboolean CL_Download( const char *cmd, const char *pakname, qboolean autoDownloa
 		return qfalse;
 	}
 
-	s = pakname;
-
 	// skip leading slashes
 	while ( *pakname == '/' || *pakname == '\\' )
 		pakname++;
 
 	// skip gamedir
-	s = Q_strrchr( pakname, '/' );
+	s = strrchr( pakname, '/' );
 	if ( s )
 		pakname = s+1;
 
@@ -4727,7 +4778,6 @@ qboolean CL_Download( const char *cmd, const char *pakname, qboolean autoDownloa
 			return qfalse;
 		}
 	}
-
 
 	Q_strncpyz( url, cl_dlURL->string, sizeof( url ) );
 

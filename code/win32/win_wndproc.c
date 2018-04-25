@@ -622,7 +622,7 @@ LRESULT WINAPI MainWndProc( HWND hWnd, UINT uMsg, WPARAM  wParam, LPARAM lParam 
 		if ( uTimerID_1 == 0 )
 			uTimerID_1 = SetTimer( g_wv.hWnd, TIMER_ID_1, 100, NULL );
 
-		break;
+		return 0;
 	
 	case WM_SETFOCUS:
 	case WM_KILLFOCUS:
@@ -670,7 +670,7 @@ LRESULT WINAPI MainWndProc( HWND hWnd, UINT uMsg, WPARAM  wParam, LPARAM lParam 
 
 		SNDDMA_Activate();
 
-		break;
+		return 0;
 
 	case WM_MOVE:
 		{
@@ -719,12 +719,50 @@ LRESULT WINAPI MainWndProc( HWND hWnd, UINT uMsg, WPARAM  wParam, LPARAM lParam 
 			// with another opened topmost window app like TaskManager
 			if ( IsIconic( hWnd ) )
 				gw_minimized = qtrue;
+			VID_AppActivate( fActive );
 			if ( fMinimized ) {
 				GLW_RestoreGamma();
 				SetDesktopDisplaySettings();
 			}
 			KillTimer( g_wv.hWnd, uTimerID_1 );
 			uTimerID_1 = 0;
+		}
+		break;
+
+	case WM_WINDOWPOSCHANGING:
+		if ( g_wv.borderless )
+		{
+			WINDOWPOS *pos = (LPWINDOWPOS) lParam;
+			const int threshold = 10;
+			HMONITOR hMonitor;
+			MONITORINFO mi;
+			const RECT *r;
+			RECT rr;
+
+			rr.left = pos->x;
+			rr.right = pos->x + pos->cx;
+			rr.top = pos->y;
+			rr.bottom = pos->y + pos->cy;
+			hMonitor = MonitorFromRect( &rr, MONITOR_DEFAULTTONEAREST );
+
+			if ( hMonitor )
+			{
+				mi.cbSize = sizeof( mi );
+				GetMonitorInfo( hMonitor, &mi );
+				r = &mi.rcWork;
+
+				if ( pos->x >= (r->left - threshold) && pos->x <= (r->left + threshold ) )
+					pos->x = r->left;
+				else if( (pos->x + pos->cx) >= (r->right - threshold) && (pos->x + pos->cx) <= (r->right + threshold) )
+					pos->x = (r->right - pos->cx);
+
+				if ( pos->y >= (r->top - threshold) && pos->y <= (r->top + threshold ) )
+					pos->y = r->top;
+				else if( (pos->y + pos->cy) >= (r->bottom - threshold) && (pos->y + pos->cy) <= (r->bottom + threshold) )
+					pos->y = (r->bottom - pos->cy);
+
+				return 0;
+			}
 		}
 		break;
 
@@ -749,7 +787,7 @@ LRESULT WINAPI MainWndProc( HWND hWnd, UINT uMsg, WPARAM  wParam, LPARAM lParam 
 
 	case WM_SYSCOMMAND:
 		// Prevent Alt+Letter commands from hanging the application temporarily
-		if ( wParam == SC_KEYMENU )
+		if ( wParam == SC_KEYMENU || wParam == SC_MOUSEMENU + HTSYSMENU || wParam == SC_CLOSE + HTSYSMENU )
 			return 0;
 
 		if ( wParam == SC_SCREENSAVE || wParam == SC_MONITORPOWER )
@@ -765,6 +803,9 @@ LRESULT WINAPI MainWndProc( HWND hWnd, UINT uMsg, WPARAM  wParam, LPARAM lParam 
 			mouse_event( MOUSEEVENTF_MOVE | MOUSEEVENTF_LEFTDOWN, (DWORD)-7, 0, 0, 0 );
 		}
 		break;
+
+	case WM_CONTEXTMENU:
+		return 0;
 
 	case WM_HOTKEY:
 		// check for left/right modifiers
@@ -840,6 +881,10 @@ LRESULT WINAPI MainWndProc( HWND hWnd, UINT uMsg, WPARAM  wParam, LPARAM lParam 
 		}
 		break;
 #endif
+	case WM_NCHITTEST:
+		if ( g_wv.borderless && GetKeyState( VK_CONTROL ) & (1<<15) )
+			return HTCAPTION;
+		break;
 
 	case WM_ERASEBKGND: 
 		// avoid GDI clearing the OpenGL window background in Vista/7

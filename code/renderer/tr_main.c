@@ -916,7 +916,7 @@ static qboolean IsMirror( const drawSurf_t *drawSurf, int entityNum )
 **
 ** Determines if a surface is completely offscreen.
 */
-static qboolean SurfIsOffscreen( const drawSurf_t *drawSurf, vec4_t clipDest[128], qboolean *isMirror ) {
+static qboolean SurfIsOffscreen( const drawSurf_t *drawSurf, qboolean *isMirror ) {
 	float shortest = 100000000;
 	int entityNum;
 	int numTriangles;
@@ -936,8 +936,6 @@ static qboolean SurfIsOffscreen( const drawSurf_t *drawSurf, vec4_t clipDest[128
 	RB_BeginSurface( shader, fogNum );
 	tess.allowVBO = qfalse;
 	rb_surfaceTable[ *drawSurf->surface ]( drawSurf->surface );
-
-	assert( tess.numVertexes < 128 );
 
 	for ( i = 0; i < tess.numVertexes; i++ )
 	{
@@ -1076,7 +1074,6 @@ Returns qtrue if another view has been rendered
 */
 extern int r_numdlights;
 static qboolean R_MirrorViewBySurface( const drawSurf_t *drawSurf, int entityNum ) {
-	vec4_t			clipDest[128];
 	viewParms_t		newParms;
 	viewParms_t		oldParms;
 	orientation_t	surface, camera;
@@ -1093,7 +1090,7 @@ static qboolean R_MirrorViewBySurface( const drawSurf_t *drawSurf, int entityNum
 	}
 
 	// trivially reject portal/mirror
-	if ( SurfIsOffscreen( drawSurf, clipDest, &isMirror ) ) {
+	if ( SurfIsOffscreen( drawSurf, &isMirror ) ) {
 		return qfalse;
 	}
 
@@ -1123,7 +1120,7 @@ static qboolean R_MirrorViewBySurface( const drawSurf_t *drawSurf, int entityNum
 	}
 #endif
 
-	if ( tess.numVertexes > 2 ) {
+	if ( tess.numVertexes > 2 && r_fastsky->integer ) {
 		int mins[2], maxs[2];
 		R_GetModelViewBounds( mins, maxs );
 		newParms.scissorX = newParms.viewportX + mins[0];
@@ -1207,8 +1204,8 @@ static ID_INLINE void R_Radix( int byte, int size, const drawSurf_t *source, dra
   int           count[ 256 ] = { 0 };
   int           index[ 256 ];
   int           i;
-  unsigned char *sortKey = NULL;
-  unsigned char *end = NULL;
+  unsigned char *sortKey;
+  unsigned char *end;
 
   sortKey = ( (unsigned char *)&source[ 0 ].sort ) + byte;
   end = sortKey + ( size * sizeof( drawSurf_t ) );
@@ -1474,7 +1471,9 @@ static void R_SortDrawSurfs( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 			if ( r_portalOnly->integer ) {
 				return;
 			}
-			//break;	// only one mirror view at a time
+			if ( r_fastsky->integer == 0 ) {
+				break;	// only one mirror view at a time
+			}
 		}
 	}
 

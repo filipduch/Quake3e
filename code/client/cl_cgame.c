@@ -439,7 +439,7 @@ CL_CgameSystemCalls
 The cgame module is making a system call
 ====================
 */
-intptr_t CL_CgameSystemCalls( intptr_t *args ) {
+static intptr_t CL_CgameSystemCalls( intptr_t *args ) {
 	switch( args[0] ) {
 	case CG_PRINT:
 		Com_Printf( "%s", (const char*)VMA(1) );
@@ -677,7 +677,7 @@ intptr_t CL_CgameSystemCalls( intptr_t *args ) {
 	case CG_CEIL:
 		return FloatAsInt( ceil( VMF(1) ) );
 	case CG_TESTPRINTINT:
-		return sprintf( VMA(1), "%i", args[2] );
+		return sprintf( VMA(1), "%i", (int)args[2] );
 	case CG_TESTPRINTFLOAT:
 		return sprintf( VMA(1), "%f", VMF(2) );
 	case CG_ACOS:
@@ -705,21 +705,21 @@ intptr_t CL_CgameSystemCalls( intptr_t *args ) {
 		return 0;
 
 	case CG_CIN_PLAYCINEMATIC:
-	  return CIN_PlayCinematic(VMA(1), args[2], args[3], args[4], args[5], args[6]);
+		return CIN_PlayCinematic(VMA(1), args[2], args[3], args[4], args[5], args[6]);
 
 	case CG_CIN_STOPCINEMATIC:
-	  return CIN_StopCinematic(args[1]);
+		return CIN_StopCinematic(args[1]);
 
 	case CG_CIN_RUNCINEMATIC:
-	  return CIN_RunCinematic(args[1]);
+		return CIN_RunCinematic(args[1]);
 
 	case CG_CIN_DRAWCINEMATIC:
-	  CIN_DrawCinematic(args[1]);
-	  return 0;
+		CIN_DrawCinematic(args[1]);
+		return 0;
 
 	case CG_CIN_SETEXTENTS:
-	  CIN_SetExtents(args[1], args[2], args[3], args[4], args[5]);
-	  return 0;
+		CIN_SetExtents(args[1], args[2], args[3], args[4], args[5]);
+		return 0;
 
 	case CG_R_REMAP_SHADER:
 		re.RemapShader( VMA(1), VMA(2), VMA(3) );
@@ -777,13 +777,13 @@ static intptr_t QDECL CL_DllSyscall( intptr_t arg, ... ) {
 	intptr_t	args[10]; // max.count for cgame
 	va_list	ap;
 	int i;
-  
+
 	args[0] = arg;
 	va_start( ap, arg );
 	for (i = 1; i < ARRAY_LEN( args ); i++ )
 		args[ i ] = va_arg( ap, intptr_t );
 	va_end( ap );
-  
+
 	return CL_CgameSystemCalls( args );
 #else
 	return CL_CgameSystemCalls( &arg );
@@ -1009,6 +1009,67 @@ static void CL_FirstSnapshot( void ) {
 
 /*
 ==================
+CL_AvgPing
+
+Calculates Average Ping from snapshots in buffer. Used by AutoNudge.
+==================
+*/
+static float CL_AvgPing( void ) {
+	int ping[PACKET_BACKUP];
+	int count = 0;
+	int i, j, iTemp;
+	float result;
+
+	for ( i = 0; i < PACKET_BACKUP; i++ ) {
+		if ( cl.snapshots[i].ping > 0 && cl.snapshots[i].ping < 999 ) {
+			ping[count] = cl.snapshots[i].ping;
+			count++;
+		}
+	}
+
+	if ( count == 0 )
+		return 0;
+
+	// sort ping array
+	for ( i = count - 1; i > 0; --i ) {
+		for ( j = 0; j < i; ++j ) {
+			if (ping[j] > ping[j + 1]) {
+				iTemp = ping[j];
+				ping[j] = ping[j + 1];
+				ping[j + 1] = iTemp;
+			}
+		}
+	}
+
+	// use median average ping
+	if ( (count % 2) == 0 )
+		result = (ping[count / 2] + ping[(count / 2) - 1]) / 2.0;
+	else
+		result = ping[count / 2];
+
+	return result;
+}
+
+
+/*
+==================
+CL_TimeNudge
+
+Returns either auto-nudge or cl_timeNudge value.
+==================
+*/
+static int CL_TimeNudge( void ) {
+	float autoNudge = cl_autoNudge->value;
+
+	if ( autoNudge != 0.0 )
+		return (int)((CL_AvgPing() * autoNudge) + 0.5) * -1;
+	else
+		return cl_timeNudge->integer;
+}
+
+
+/*
+==================
 CL_SetCGameTime
 ==================
 */
@@ -1063,7 +1124,7 @@ void CL_SetCGameTime( void ) {
 		// cl_timeNudge is a user adjustable cvar that allows more
 		// or less latency to be added in the interest of better 
 		// smoothness or better responsiveness.
-		cl.serverTime = cls.realtime + cl.serverTimeDelta - cl_timeNudge->integer;
+		cl.serverTime = cls.realtime + cl.serverTimeDelta - CL_TimeNudge();
 
 		// guarantee that time will never flow backwards, even if
 		// serverTimeDelta made an adjustment or cl_timeNudge was changed

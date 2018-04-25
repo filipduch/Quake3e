@@ -50,14 +50,12 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #define ZA_SOUND_MONO		0x1020
 #define ZA_SOUND_STEREO		0x1021
 
-#define MAX_VIDEO_HANDLES	16
-
-extern glconfig_t glConfig;
 extern	int		s_paintedtime;
 extern	int		s_rawend;
 
 
 static void RoQ_init( void );
+static void CIN_SetLooping (int handle, qboolean loop);
 
 /******************************************************************************
 *
@@ -120,7 +118,8 @@ typedef struct {
 	byte*				gray;
 	unsigned int		xsize, ysize, maxsize, minsize;
 
-	qboolean			half, smootheddouble, inMemory;
+	qboolean			half, smootheddouble;
+	long				inMemory;
 	long				normalBuffer0;
 	long				roq_flags;
 	long				roqF0;
@@ -139,8 +138,9 @@ static int				CL_handle = -1;
 
 extern int				s_soundtime;		// sample PAIRS
 
+extern int				CL_ScaledMilliseconds( void );
 
-void CIN_CloseAllVideos(void) {
+void CIN_CloseAllVideos( void ) {
 	int		i;
 
 	for ( i = 0 ; i < MAX_VIDEO_HANDLES ; i++ ) {
@@ -151,7 +151,7 @@ void CIN_CloseAllVideos(void) {
 }
 
 
-static int CIN_HandleForVideo(void) {
+static int CIN_HandleForVideo( void ) {
 	int		i;
 
 	for ( i = 0 ; i < MAX_VIDEO_HANDLES ; i++ ) {
@@ -163,8 +163,6 @@ static int CIN_HandleForVideo(void) {
 	return -1;
 }
 
-
-extern int CL_ScaledMilliseconds(void);
 
 //-----------------------------------------------------------------------------
 // RllSetupTable
@@ -184,7 +182,6 @@ static void RllSetupTable( void )
 		cin.sqrTable[z+128] = (short)(-cin.sqrTable[z]);
 	}
 }
-
 
 
 //-----------------------------------------------------------------------------
@@ -231,7 +228,7 @@ long RllDecodeMonoToMono(unsigned char *from,short *to,unsigned int size,char si
 //
 // Returns:		Number of samples placed in output buffer
 //-----------------------------------------------------------------------------
-long RllDecodeMonoToStereo(unsigned char *from,short *to,unsigned int size,char signedOutput,unsigned short flag)
+static long RllDecodeMonoToStereo(unsigned char *from,short *to,unsigned int size,char signedOutput,unsigned short flag)
 {
 	unsigned int z;
 	int prev;
@@ -263,7 +260,7 @@ long RllDecodeMonoToStereo(unsigned char *from,short *to,unsigned int size,char 
 //
 // Returns:		Number of samples placed in output buffer
 //-----------------------------------------------------------------------------
-long RllDecodeStereoToStereo(unsigned char *from,short *to,unsigned int size,char signedOutput, unsigned short flag)
+static long RllDecodeStereoToStereo(unsigned char *from,short *to,unsigned int size,char signedOutput, unsigned short flag)
 {
 	unsigned int z;
 	unsigned char *zz = from;
@@ -323,6 +320,7 @@ long RllDecodeStereoToMono(unsigned char *from,short *to,unsigned int size,char 
 	return size;
 }
 
+
 /******************************************************************************
 *
 * Function:		
@@ -342,6 +340,7 @@ static void move8_32( byte *src, byte *dst, int spl )
 		dst += spl;
 	}
 }
+
 
 /******************************************************************************
 *
@@ -363,6 +362,7 @@ static void move4_32( byte *src, byte *dst, int spl  )
 	}
 }
 
+
 /******************************************************************************
 *
 * Function:		
@@ -383,6 +383,7 @@ static void blit8_32( byte *src, byte *dst, int spl  )
 	}
 }
 
+
 /******************************************************************************
 *
 * Function:		
@@ -402,6 +403,7 @@ static void blit4_32( byte *src, byte *dst, int spl  )
 	}
 }
 
+
 /******************************************************************************
 *
 * Function:		
@@ -415,6 +417,7 @@ static void blit2_32( byte *src, byte *dst, int spl  )
 	memcpy(dst, src, 8);
 	memcpy(dst+spl, src+8, 8);
 }
+
 
 /******************************************************************************
 *
@@ -592,6 +595,7 @@ static unsigned short yuv_to_rgb( long y, long u, long v )
 	return (unsigned short)((r<<11)+(g<<5)+(b));
 }
 
+
 /******************************************************************************
 *
 * Function:		
@@ -616,6 +620,7 @@ static unsigned int yuv_to_rgb24( long y, long u, long v )
 	
 	return LittleLong ((r)|(g<<8)|(b<<16)|(255<<24));
 }
+
 
 /******************************************************************************
 *
@@ -885,6 +890,7 @@ static void decodeCodeBook( byte *input, unsigned short roq_flags )
 	}
 }
 
+
 /******************************************************************************
 *
 * Function:		
@@ -966,6 +972,7 @@ static void setupQuad( long xOff, long yOff )
 	}
 }
 
+
 /******************************************************************************
 *
 * Function:		
@@ -976,6 +983,7 @@ static void setupQuad( long xOff, long yOff )
 
 static void readQuadInfo( byte *qData )
 {
+	const glconfig_t *config;
 	if (currentHandle < 0) return;
 
 	cinTable[currentHandle].xsize    = qData[0]+qData[1]*256;
@@ -998,22 +1006,24 @@ static void readQuadInfo( byte *qData )
 	cinTable[currentHandle].t[0] = cinTable[currentHandle].screenDelta;
 	cinTable[currentHandle].t[1] = -cinTable[currentHandle].screenDelta;
 
-        cinTable[currentHandle].drawX = cinTable[currentHandle].CIN_WIDTH;
-        cinTable[currentHandle].drawY = cinTable[currentHandle].CIN_HEIGHT;
-        
+	cinTable[currentHandle].drawX = cinTable[currentHandle].CIN_WIDTH;
+	cinTable[currentHandle].drawY = cinTable[currentHandle].CIN_HEIGHT;
+
 	// rage pro is very slow at 512 wide textures, voodoo can't do it at all
-	if ( glConfig.hardwareType == GLHW_RAGEPRO || glConfig.maxTextureSize <= 256) {
-                if (cinTable[currentHandle].drawX>256) {
-                        cinTable[currentHandle].drawX = 256;
-                }
-                if (cinTable[currentHandle].drawY>256) {
-                        cinTable[currentHandle].drawY = 256;
-                }
-		if (cinTable[currentHandle].CIN_WIDTH != 256 || cinTable[currentHandle].CIN_HEIGHT != 256) {
-			Com_Printf("HACK: approxmimating cinematic for Rage Pro or Voodoo\n");
+	config = re.GetConfig();
+	if ( config->hardwareType == GLHW_RAGEPRO || config->maxTextureSize <= 256 ) {
+		if ( cinTable[currentHandle].drawX > 256 ) {
+			cinTable[currentHandle].drawX = 256;
+		}
+		if ( cinTable[currentHandle].drawY > 256 ) {
+			cinTable[currentHandle].drawY = 256;
+		}
+		if ( cinTable[currentHandle].CIN_WIDTH != 256 || cinTable[currentHandle].CIN_HEIGHT != 256 ) {
+			Com_Printf( "HACK: approxmimating cinematic for Rage Pro or Voodoo\n" );
 		}
 	}
 }
+
 
 /******************************************************************************
 *
@@ -1038,6 +1048,7 @@ static void RoQPrepMcomp( long xoff, long yoff )
 		}
 	}
 }
+
 
 /******************************************************************************
 *
@@ -1081,6 +1092,8 @@ static byte* RoQFetchInterlaced( byte *source ) {
 	return cinTable[currentHandle].buf2;
 }
 */
+
+
 static void RoQReset( void ) {
 	
 	if (currentHandle < 0) return;
@@ -1091,6 +1104,7 @@ static void RoQReset( void ) {
 	RoQ_init();
 	cinTable[currentHandle].status = FMV_LOOPED;
 }
+
 
 /******************************************************************************
 *
@@ -1227,6 +1241,7 @@ redump:
 	cinTable[currentHandle].RoQPlayed	+= cinTable[currentHandle].RoQFrameSize+8;
 }
 
+
 /******************************************************************************
 *
 * Function:		
@@ -1257,6 +1272,7 @@ static void RoQ_init( void )
 	}
 
 }
+
 
 /******************************************************************************
 *
@@ -1306,7 +1322,7 @@ static void RoQShutdown( void ) {
 CIN_StopCinematic
 ==================
 */
-e_status CIN_StopCinematic(int handle) {
+e_status CIN_StopCinematic( int handle ) {
 	
 	if (handle < 0 || handle>= MAX_VIDEO_HANDLES || cinTable[handle].status == FMV_EOF) return FMV_EOF;
 	currentHandle = handle;
@@ -1336,7 +1352,7 @@ CIN_RunCinematic
 Fetch and decompress the pending frame
 ==================
 */
-e_status CIN_RunCinematic (int handle)
+e_status CIN_RunCinematic( int handle )
 {
 	unsigned int start = 0;
 	int     thisTime = 0;
@@ -1402,6 +1418,7 @@ e_status CIN_RunCinematic (int handle)
 	return cinTable[currentHandle].status;
 }
 
+
 /*
 ==================
 CIN_PlayCinematic
@@ -1433,7 +1450,7 @@ int CIN_PlayCinematic( const char *arg, int x, int y, int w, int h, int systemBi
 
 	cin.currentHandle = currentHandle;
 
-	strcpy(cinTable[currentHandle].fileName, name);
+	Q_strncpyz( cinTable[currentHandle].fileName, name, sizeof( cinTable[currentHandle].fileName ) );
 
 	cinTable[currentHandle].ROQSize = FS_FOpenFileRead( cinTable[currentHandle].fileName, &cinTable[currentHandle].iFile, qtrue );
 
@@ -1498,7 +1515,8 @@ int CIN_PlayCinematic( const char *arg, int x, int y, int w, int h, int systemBi
 	return -1;
 }
 
-void CIN_SetExtents (int handle, int x, int y, int w, int h) {
+
+void CIN_SetExtents( int handle, int x, int y, int w, int h ) {
 	if (handle < 0 || handle>= MAX_VIDEO_HANDLES || cinTable[handle].status == FMV_EOF) return;
 	cinTable[handle].xpos = x;
 	cinTable[handle].ypos = y;
@@ -1507,10 +1525,12 @@ void CIN_SetExtents (int handle, int x, int y, int w, int h) {
 	cinTable[handle].dirty = qtrue;
 }
 
-void CIN_SetLooping(int handle, qboolean loop) {
+
+static void CIN_SetLooping( int handle, qboolean loop ) {
 	if (handle < 0 || handle>= MAX_VIDEO_HANDLES || cinTable[handle].status == FMV_EOF) return;
 	cinTable[handle].looping = loop;
 }
+
 
 /*
 ==================
@@ -1519,7 +1539,7 @@ CIN_ResampleCinematic
 Resample cinematic to 256x256 and store in buf2
 ==================
 */
-void CIN_ResampleCinematic(int handle, int *buf2) {
+static void CIN_ResampleCinematic( int handle, int *buf2 ) {
 	int ix, iy, *buf3, xm, ym, ll;
 	byte	*buf;
 
@@ -1572,12 +1592,13 @@ void CIN_ResampleCinematic(int handle, int *buf2) {
 	}
 }
 
+
 /*
 ==================
 CIN_DrawCinematic
 ==================
 */
-void CIN_DrawCinematic (int handle) {
+void CIN_DrawCinematic( int handle ) {
 	float	x, y, w, h;
 	byte	*buf;
 
@@ -1611,7 +1632,8 @@ void CIN_DrawCinematic (int handle) {
 	cinTable[handle].dirty = qfalse;
 }
 
-void CL_PlayCinematic_f(void) {
+
+void CL_PlayCinematic_f( void ) {
 	char	*arg, *s;
 	int bits = CIN_system;
 
@@ -1641,20 +1663,21 @@ void CL_PlayCinematic_f(void) {
 }
 
 
-void SCR_DrawCinematic (void) {
+void SCR_DrawCinematic( void ) {
 	if (CL_handle >= 0 && CL_handle < MAX_VIDEO_HANDLES) {
 		CIN_DrawCinematic(CL_handle);
 	}
 }
 
-void SCR_RunCinematic (void)
-{
+
+void SCR_RunCinematic( void ) {
 	if (CL_handle >= 0 && CL_handle < MAX_VIDEO_HANDLES) {
 		CIN_RunCinematic(CL_handle);
 	}
 }
 
-void SCR_StopCinematic(void) {
+
+void SCR_StopCinematic( void ) {
 	if (CL_handle >= 0 && CL_handle < MAX_VIDEO_HANDLES) {
 		CIN_StopCinematic(CL_handle);
 		S_StopAllSounds ();
@@ -1662,7 +1685,8 @@ void SCR_StopCinematic(void) {
 	}
 }
 
-void CIN_UploadCinematic(int handle) {
+
+void CIN_UploadCinematic( int handle ) {
 	if (handle >= 0 && handle < MAX_VIDEO_HANDLES) {
 		if (!cinTable[handle].buf) {
 			return;
@@ -1705,4 +1729,3 @@ void CIN_UploadCinematic(int handle) {
 		}
 	}
 }
-

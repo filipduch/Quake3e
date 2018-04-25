@@ -46,11 +46,7 @@ to the new value before sending out any replies.
 
 */
 
-
-#define	MAX_PACKETLEN			1400		// max size of a network packet
-
 #define	FRAGMENT_SIZE			(MAX_PACKETLEN - 100)
-#define	PACKET_HEADER			10			// two ints and a short
 
 #define	FRAGMENT_BIT			(1U<<31)
 
@@ -568,6 +564,7 @@ Sends a text message in an out-of-band datagram
 void QDECL NET_OutOfBandPrint( netsrc_t sock, const netadr_t *adr, const char *format, ... ) {
 	va_list		argptr;
 	char		string[ MAX_PACKETLEN ];
+	int			len;
 
 	// set the header
 	string[0] = -1;
@@ -576,11 +573,11 @@ void QDECL NET_OutOfBandPrint( netsrc_t sock, const netadr_t *adr, const char *f
 	string[3] = -1;
 
 	va_start( argptr, format );
-	Q_vsnprintf( string+4, sizeof(string)-4, format, argptr );
+	len = Q_vsnprintf( string+4, sizeof(string)-4, format, argptr ) + 4;
 	va_end( argptr );
 
 	// send the datagram
-	NET_SendPacket( sock, strlen( string ), string, adr );
+	NET_SendPacket( sock, len, string, adr );
 }
 
 

@@ -73,8 +73,13 @@ void QDECL Sys_Error( const char *error, ... ) {
 	MSG		msg;
 
 	va_start( argptr, error );
-	vsprintf( text, error, argptr );
+	Q_vsnprintf( text, sizeof( text ), error, argptr );
 	va_end( argptr );
+
+#ifndef DEDICATED
+	IN_Shutdown();
+	CL_Shutdown( text, qtrue );
+#endif
 
 	Conbuf_AppendText( text );
 	Conbuf_AppendText( "\n" );
@@ -83,10 +88,6 @@ void QDECL Sys_Error( const char *error, ... ) {
 	Sys_ShowConsole( 1, qtrue );
 
 	timeEndPeriod( 1 );
-
-#ifndef DEDICATED
-	IN_Shutdown();
-#endif
 
 	// wait for the user to quit
 	while ( 1 ) {
@@ -214,8 +215,6 @@ DIRECTORY SCANNING
 ==============================================================
 */
 
-#define	MAX_FOUND_FILES	0x1000
-
 void Sys_ListFilteredFiles( const char *basedir, const char *subdirs, const char *filter, char **list, int *numfiles ) {
 	char		search[MAX_OSPATH*2+1];
 	char		newsubdirs[MAX_OSPATH*2];
@@ -292,15 +291,20 @@ Sys_Sleep
 =============
 */
 void Sys_Sleep( int msec ) {
-
-	if ( msec < 0 && com_dedicated->integer ) {
-		WaitMessage();
+	
+	if ( msec < 0 ) {
+		// special case: wait for event or network packet
+		DWORD dwResult;
+		msec = 300;
+		do {
+			dwResult = MsgWaitForMultipleObjects( 0, NULL, FALSE, msec, QS_ALLEVENTS );
+		} while ( dwResult == WAIT_TIMEOUT && NET_Sleep( 10, 0 ) );
+		//WaitMessage();
 		return;
 	}
 
-	if ( msec <= 0 ) {
+	if ( msec == 0 )
 		return;
-	}
 
 	Sleep ( msec );
 }
@@ -788,7 +792,7 @@ static void SetDPIAwareness( void )
 		pSetThreadDpiAwarenessContext = (pfnSetThreadDpiAwarenessContext) GetProcAddress( dll, "SetThreadDpiAwarenessContext" );
 		if ( pSetThreadDpiAwarenessContext )
 		{
-			pSetThreadDpiAwarenessContext( (HANDLE)(-2) ); // DPI_AWARENESS_CONTEXT_SYSTEM_AWARE
+			pSetThreadDpiAwarenessContext( (HANDLE)(intptr_t)-2 ); // DPI_AWARENESS_CONTEXT_SYSTEM_AWARE
 		}
 
 	}

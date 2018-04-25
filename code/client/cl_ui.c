@@ -782,7 +782,7 @@ CL_UISystemCalls
 The ui module is making a system call
 ====================
 */
-intptr_t CL_UISystemCalls( intptr_t *args ) {
+static intptr_t CL_UISystemCalls( intptr_t *args ) {
 	switch( args[0] ) {
 	case UI_ERROR:
 		Com_Error( ERR_DROP, "%s", (const char*)VMA(1) );
@@ -1069,7 +1069,7 @@ intptr_t CL_UISystemCalls( intptr_t *args ) {
 		return 0;
 	
 	case UI_SET_PBCLSTATUS:
-		return 0;	
+		return 0;
 
 	case UI_R_REGISTERFONT:
 		re.RegisterFont( VMA(1), args[2], VMA(3));
@@ -1256,7 +1256,7 @@ void CL_InitUI( void ) {
 
 	uivm = VM_Create( VM_UI, CL_UISystemCalls, UI_DllSyscall, ui_vmMainArgs, interpret );
 	if ( !uivm ) {
-		Com_Error( ERR_FATAL, "VM_Create on UI failed" );
+		Com_Error( ERR_DROP, "VM_Create on UI failed" );
 	}
 
 	// sanity check
