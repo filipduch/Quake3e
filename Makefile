@@ -223,7 +223,7 @@ ifeq ($(PLATFORM),linux)
   SHLIBLDFLAGS=-shared $(LDFLAGS)
 
   THREAD_LDFLAGS=-lpthread
-  LDFLAGS=-ldl -lm -Wl,--hash-style=both
+  LDFLAGS=-ldl -lm -Wl,--hash-style=both -lpthread
 
   CLIENT_LDFLAGS=-L/usr/X11R7/$(LIB) -L/usr/$(LIB) -lX11
 
