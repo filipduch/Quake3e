@@ -117,10 +117,10 @@ typedef struct {
 //
 typedef struct {
 	// print message on the local console
-	void	(QDECL *Printf)( int printLevel, const char *fmt, ...) __attribute__ ((format (printf, 2, 3)));
+	void	(QDECL *Printf)( printParm_t printLevel, const char *fmt, ... ) __attribute__ ((format (printf, 2, 3)));
 
 	// abort the game
-	void	(QDECL *Error)( errorParm_t errorLevel, const char *fmt, ...) __attribute__ ((noreturn, format (printf, 2, 3)));
+	void	(QDECL *Error)( errorParm_t errorLevel, const char *fmt, ... ) __attribute__ ((noreturn, format (printf, 2, 3)));
 
 	// milliseconds should only be used for profiling, never
 	// for anything game related.  Get time from the refdef
@@ -151,6 +151,7 @@ typedef struct {
 	void	(*Cvar_ResetGroup)( cvarGroup_t group, qboolean resetModifiedFlags );
 
 	void	(*Cvar_VariableStringBuffer)( const char *var_name, char *buffer, int bufsize );
+	const char *(*Cvar_VariableString)( const char *var_name );
 	int		(*Cvar_VariableIntegerValue)( const char *var_name );
 
 	void	(*Cmd_AddCommand)( const char *name, void(*cmd)(void) );
@@ -183,6 +184,7 @@ typedef struct {
 
 	void	(*CL_WriteAVIVideoFrame)( const byte *buffer, int size );
 	qboolean (*CL_IsMinimized)( void );
+	void	(*CL_SetScaling)( float factor, int captureWidth, int captureHeight );
 
 	void	(*Sys_SetClipboardBitmap)( const byte *bitmap, int size );
 	qboolean(*Sys_LowPhysicalMemory)( void );

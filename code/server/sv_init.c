@@ -386,15 +386,13 @@ static void SV_ClearServer( void ) {
 
 /*
 ================
-SV_TouchCGame
-
-  touch the cgame.vm so that a pure client can load it if it's in a seperate pk3
+SV_TouchFile
 ================
 */
-static void SV_TouchCGame( void ) {
+static void SV_TouchFile( const char *filename ) {
 	fileHandle_t	f;
 
-	FS_FOpenFileRead( "vm/cgame.qvm", &f, qfalse );
+	FS_FOpenFileRead( filename, &f, qfalse );
 	if ( f != FS_INVALID_HANDLE ) {
 		FS_FCloseFile( f );
 	}
@@ -473,6 +471,17 @@ void SV_SpawnServer( const char *mapname, qboolean killBots ) {
 	Cvar_Set( "nextmap", "map_restart 0" );
 //	Cvar_Set( "nextmap", va("map %s", server) );
 
+	// try to reset level time if server is empty
+	if ( !sv_levelTimeReset->integer && !sv.restartTime ) {
+		for ( i = 0; i < sv_maxclients->integer; i++ ) {
+			if ( svs.clients[ i ].state != CS_FREE )
+				break;
+		}
+		if ( i == sv_maxclients->integer ) {
+			sv.time = 0;
+		}
+	}
+
 	for ( i = 0; i < sv_maxclients->integer; i++ ) {
 		// save when the server started for each client already connected
 		if ( svs.clients[i].state >= CS_CONNECTED && sv_levelTimeReset->integer ) {
@@ -520,6 +529,9 @@ void SV_SpawnServer( const char *mapname, qboolean killBots ) {
 	// to load during actual gameplay
 	sv.state = SS_LOADING;
 
+	// make sure that level time is not zero
+	sv.time = sv.time ? sv.time : 1;
+
 	// load and spawn all other entities
 	SV_InitGameProgs();
 
@@ -527,12 +539,11 @@ void SV_SpawnServer( const char *mapname, qboolean killBots ) {
 	sv_gametype->modified = qfalse;
 
 	// run a few frames to allow everything to settle
-	for (i = 0;i < 3; i++)
+	for ( i = 0; i < 3; i++ )
 	{
-		VM_Call (gvm, GAME_RUN_FRAME, sv.time);
-		SV_BotFrame (sv.time);
 		sv.time += 100;
-		svs.time += 100;
+		VM_Call( gvm, GAME_RUN_FRAME, sv.time );
+		SV_BotFrame( sv.time );
 	}
 
 	// create a baseline for more efficient communications
@@ -577,7 +588,7 @@ void SV_SpawnServer( const char *mapname, qboolean killBots ) {
 					client->gentity = ent;
 
 					client->deltaMessage = -1;
-					client->lastSnapshotTime = 0;	// generate a snapshot immediately
+					client->lastSnapshotTime = svs.time - 9999; // generate a snapshot immediately
 
 					VM_Call( gvm, GAME_CLIENT_BEGIN, i );
 				}
@@ -586,16 +597,16 @@ void SV_SpawnServer( const char *mapname, qboolean killBots ) {
 	}	
 
 	// run another frame to allow things to look at all the players
+	sv.time += 100;
 	VM_Call( gvm, GAME_RUN_FRAME, sv.time );
 	SV_BotFrame( sv.time );
-	sv.time += 100;
 	svs.time += 100;
 
-	// if a dedicated pure server we need to touch the cgame because it could be in a
-	// seperate pk3 file and the client will need to load the latest cgame.qvm
-	if ( com_dedicated->integer && sv_pure->integer ) {
-		SV_TouchCGame();
-	}
+	// we need to touch the cgame and ui qvm because they could be in
+	// separate pk3 files and the client will need to download the pk3
+	// files with the latest cgame and ui qvm to pass the pure check
+	SV_TouchFile( "vm/cgame.qvm" );
+	SV_TouchFile( "vm/ui.qvm" );
 
 	// the server sends these to the clients so they can figure
 	// out which pk3s should be auto-downloaded
@@ -610,12 +621,17 @@ void SV_SpawnServer( const char *mapname, qboolean killBots ) {
 	if ( sv_pure->integer ) {
 		int freespace, pakslen, infolen;
 		qboolean overflowed = qfalse;
+		qboolean infoTruncated = qfalse;
 
 		p = FS_LoadedPakChecksums( &overflowed );
 
 		pakslen = strlen( p ) + 9; // + strlen( "\\sv_paks\\" )
 		freespace = SV_RemainingGameState();
-		infolen = strlen( Cvar_InfoString_Big( CVAR_SYSTEMINFO ) );
+		infolen = strlen( Cvar_InfoString_Big( CVAR_SYSTEMINFO, &infoTruncated ) );
+
+		if ( infoTruncated ) {
+			Com_Printf( S_COLOR_YELLOW "WARNING: truncated systeminfo!\n" );
+		}
 
 		if ( pakslen > freespace || infolen + pakslen >= BIG_INFO_STRING || overflowed ) {
 			// switch to degraded pure mode
@@ -633,10 +649,10 @@ void SV_SpawnServer( const char *mapname, qboolean killBots ) {
 	}
 
 	// save systeminfo and serverinfo strings
-	SV_SetConfigstring( CS_SYSTEMINFO, Cvar_InfoString_Big( CVAR_SYSTEMINFO ) );
+	SV_SetConfigstring( CS_SYSTEMINFO, Cvar_InfoString_Big( CVAR_SYSTEMINFO, NULL ) );
 	cvar_modifiedFlags &= ~CVAR_SYSTEMINFO;
 
-	SV_SetConfigstring( CS_SERVERINFO, Cvar_InfoString( CVAR_SERVERINFO ) );
+	SV_SetConfigstring( CS_SERVERINFO, Cvar_InfoString( CVAR_SERVERINFO, NULL ) );
 	cvar_modifiedFlags &= ~CVAR_SERVERINFO;
 
 	// any media configstring setting now should issue a warning
@@ -793,7 +809,7 @@ void SV_FinalMessage( const char *message ) {
 					SV_SendServerCommand( cl, "disconnect \"%s\"", message );
 				}
 				// force a snapshot to be sent
-				cl->lastSnapshotTime = 0;
+				cl->lastSnapshotTime = svs.time - 9999; // generate a snapshot immediately
 				cl->state = CS_ZOMBIE; // skip delta generation
 				SV_SendClientSnapshot( cl );
 			}

@@ -46,6 +46,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #define STRING(x)	#x
 
 //#define	PRE_RELEASE_DEMO
+#define DELAY_WRITECONFIG
 
 //============================================================================
 
@@ -423,6 +424,8 @@ files can be execed.
 
 */
 
+#define MAX_CMD_LINE 1024
+
 void Cbuf_Init( void );
 // allocates an initial text buffer that will grow as needed
 
@@ -584,8 +587,8 @@ void 	Cvar_WriteVariables( fileHandle_t f );
 
 void	Cvar_Init( void );
 
-char	*Cvar_InfoString( int bit );
-char	*Cvar_InfoString_Big( int bit );
+const char *Cvar_InfoString( int bit, qboolean *truncated );
+const char *Cvar_InfoString_Big( int bit, qboolean *truncated );
 // returns an info string containing all the cvars that have the given bit set
 // in their flags ( CVAR_USERINFO, CVAR_SERVERINFO, CVAR_SYSTEMINFO, etc )
 void	Cvar_InfoStringBuffer( int bit, char *buff, int buffsize );
@@ -649,8 +652,10 @@ typedef enum {
 
 #ifdef DEDICATED
 #define Q3CONFIG_CFG "q3config_server.cfg"
+#define CONSOLE_HISTORY_FILE "q3history_server"
 #else
 #define Q3CONFIG_CFG "q3config.cfg"
+#define CONSOLE_HISTORY_FILE "q3history"
 #endif
 
 qboolean FS_Initialized( void );
@@ -704,8 +709,11 @@ qboolean FS_FileIsInPAK( const char *filename, int *pChecksum, char *pakName );
 // returns qtrue if a file is in the PAK file, otherwise qfalse
 
 int		FS_PakIndexForHandle( fileHandle_t f );
+
 // returns pak index or -1 if file is not in pak
-int		fs_lastPakIndex;
+extern int fs_lastPakIndex;
+
+extern qboolean fs_reordered;
 
 int		FS_Write( const void *buffer, int len, fileHandle_t f );
 
@@ -825,6 +833,9 @@ Edit fields and command line history/completion
 */
 
 #define	MAX_EDIT_LINE	256
+#if MAX_EDIT_LINE > MAX_CMD_LINE
+#error "MAX_EDIT_LINE > MAX_CMD_LINE"
+#endif
 typedef struct {
 	int		cursor;
 	int		scroll;
@@ -838,10 +849,10 @@ void Field_CompleteKeyname( void );
 void Field_CompleteFilename( const char *dir, const char *ext, qboolean stripExt, int flags );
 void Field_CompleteCommand( char *cmd, qboolean doCommands, qboolean doCvars );
 
-void Con_SaveField( const field_t *field );
-void Con_HistoryGetPrev( field_t *field );
-void Con_HistoryGetNext( field_t *field );
 void Con_ResetHistory( void );
+void Con_SaveField( const field_t *field );
+qboolean Con_HistoryGetPrev( field_t *field );
+qboolean Con_HistoryGetNext( field_t *field );
 
 /*
 ==============================================================
@@ -908,6 +919,8 @@ void		Com_StartupVariable( const char *match );
 // checks for and removes command line "+set var arg" constructs
 // if match is NULL, all set commands will be executed, otherwise
 // only a set with the exact name.  Only used during startup.
+
+void		Com_WriteConfiguration( void );
 
 
 extern	cvar_t	*com_developer;
@@ -1088,6 +1101,9 @@ void Key_WriteBindings( fileHandle_t f );
 
 void S_ClearSoundBuffer( void );
 // call before filesystem access
+
+void CL_SystemInfoChanged( qboolean onlyGame );
+qboolean CL_GameSwitch( void );
 
 // AVI files have the start of pixel lines 4 byte-aligned
 #define AVI_LINE_PADDING 4

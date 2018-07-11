@@ -257,17 +257,21 @@ DrawTris
 Draws triangle outlines for debugging
 ================
 */
-static void DrawTris (shaderCommands_t *input) {
+static void DrawTris( shaderCommands_t *input ) {
+
+	GL_ProgramDisable();
+	tess.dlightUpdateParams = qtrue;
+
 	GL_Bind( tr.whiteImage );
-	qglColor3f (1,1,1);
+	qglColor3f( 1, 1, 1 );
 
 	GL_State( GLS_POLYMODE_LINE | GLS_DEPTHMASK_TRUE );
 	qglDepthRange( 0, 0 );
 
-	qglDisableClientState (GL_COLOR_ARRAY);
-	qglDisableClientState (GL_TEXTURE_COORD_ARRAY);
+	qglDisableClientState( GL_COLOR_ARRAY );
+	qglDisableClientState( GL_TEXTURE_COORD_ARRAY );
 
-	qglVertexPointer (3, GL_FLOAT, 16, input->xyz);	// padded for SIMD
+	qglVertexPointer( 3, GL_FLOAT, 16, input->xyz ); // padded for SIMD
 
 	if ( qglLockArraysEXT ) {
 		qglLockArraysEXT( 0, input->numVertexes );
@@ -373,7 +377,7 @@ t0 = most upstream according to spec
 t1 = most downstream according to spec
 ===================
 */
-static void DrawMultitextured( shaderCommands_t *input, int stage ) {
+static void DrawMultitextured( const shaderCommands_t *input, int stage ) {
 	const shaderStage_t *pStage;
 
 	pStage = tess.xstages[ stage ];
@@ -404,7 +408,7 @@ static void DrawMultitextured( shaderCommands_t *input, int stage ) {
 	if ( r_lightmap->integer ) {
 		GL_TexEnv( GL_REPLACE );
 	} else {
-		GL_TexEnv( tess.shader->multitextureEnv );
+		GL_TexEnv( pStage->mtEnv );
 	}
 
 	qglTexCoordPointer( 2, GL_FLOAT, 0, input->svars.texcoords[1] );
@@ -680,7 +684,7 @@ void R_ComputeColors( const shaderStage_t *pStage )
 			break;
 		case CGEN_FOG:
 			{
-				fog_t		*fog;
+				const fog_t *fog;
 
 				fog = tr.world->fogs + tess.fogNum;
 
@@ -921,7 +925,7 @@ void R_ComputeTexCoords( const shaderStage_t *pStage ) {
 /*
 ** RB_IterateStagesGeneric
 */
-static void RB_IterateStagesGeneric( shaderCommands_t *input )
+static void RB_IterateStagesGeneric( const shaderCommands_t *input )
 {
 	const shaderStage_t *pStage;
 	int stage;
@@ -975,6 +979,7 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input )
 				//GL_State( pStage->stateBits &= ~GLS_DEPTHMASK_TRUE );
 			}
 		}
+
 		// allow skipping out to show just lightmaps during development
 		if ( r_lightmap->integer && ( pStage->bundle[0].isLightmap || pStage->bundle[1].isLightmap ) )
 			break;

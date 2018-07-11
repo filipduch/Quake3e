@@ -397,7 +397,7 @@ static qboolean isStaticShader( shader_t *shader )
 		return qfalse;
 
 	shader->isStaticShader = qtrue;
-	mtx = shader->stages[0]->bundle[1].image[0] ? shader->multitextureEnv : 0;
+	mtx = shader->stages[0]->bundle[1].image[0] ? shader->stages[0]->mtEnv : 0;
 
 	shader->vboVPindex = getVPindex( mtx, 0 );
 	// generate vertex programs
@@ -627,7 +627,7 @@ void R_BuildWorldVBO( msurface_t *surf, int surfCount )
 		return;
 
 	if ( glConfig.numTextureUnits < 3 ) {
-		ri.Printf( PRINT_ALL, S_COLOR_YELLOW "... not enough texture units for VBO" );
+		ri.Printf( PRINT_WARNING, "... not enough texture units for VBO\n" );
 		return;
 	}
 
@@ -836,9 +836,9 @@ void R_BuildWorldVBO( msurface_t *surf, int surfCount )
 __fail:
 
 	if ( err == GL_OUT_OF_MEMORY )
-		ri.Printf( PRINT_ALL, S_COLOR_YELLOW "%s: out of memory\n", __func__ );
+		ri.Printf( PRINT_WARNING, "%s: out of memory\n", __func__ );
 	else
-		ri.Printf( PRINT_ALL, S_COLOR_YELLOW "%s: error %i\n", __func__, err );
+		ri.Printf( PRINT_ERROR, "%s: error %i\n", __func__, err );
 
 	// reset vbo markers
 	for ( i = 0, n = 0, sf = surf; i < surfCount; i++, sf++ ) {
@@ -1098,7 +1098,6 @@ static void VBO_RenderIndexQueue( qboolean mtx )
 		{
 			vbo_item_t *start = vbo->items + a[ i ];
 			vbo_item_t *end = vbo->items + a[ i + item_run - 1 ];
-			VBO_BindIndex( qtrue );
 			n = (end->index_offset - start->index_offset) / sizeof(glIndex_t) + end->num_indexes;
 			VBO_AddItemRangeToIBOBuffer( start->index_offset, n );
 		}
@@ -1222,7 +1221,7 @@ static void RB_IterateStagesVBO( const shaderCommands_t *input )
 			}
 			else
 			{
-				GL_TexEnv( tess.shader->multitextureEnv );
+				GL_TexEnv( pStage->mtEnv );
 			}
 		}
 
@@ -1242,6 +1241,22 @@ static void RB_IterateStagesVBO( const shaderCommands_t *input )
 	else
 	{
 		VBO_RenderIndexQueue( qfalse );
+	}
+
+	if ( r_speeds->integer == 1 )
+	{
+		// update performance stats
+		const vbo_item_t *it;
+		int i;
+
+		for ( i = 0; i < vbo->items_queue_count; i++ )
+		{
+			it = vbo->items + vbo->items_queue[ i ];
+			backEnd.pc.c_totalIndexes += it->num_indexes;
+			backEnd.pc.c_indexes += it->num_indexes;
+			backEnd.pc.c_vertexes += it->num_vertexes;
+		}
+		backEnd.pc.c_shaders++;
 	}
 	
 	tess.vboIndex = 0;

@@ -3,13 +3,6 @@
 #include "q_shared.h"
 #include "qcommon.h"
 
-// This must not exceed MAX_CMD_LINE
-#define     MAX_CONSOLE_SAVE_BUFFER	1024
-#define     CONSOLE_HISTORY_FILE    "q3history"
-
-static char consoleSaveBuffer[ MAX_CONSOLE_SAVE_BUFFER ];
-static int  consoleSaveBufferSize = 0;
-
 static      qboolean historyLoaded = qfalse;
 
 #define     COMMAND_HISTORY 32
@@ -20,6 +13,8 @@ int         nextHistoryLine; // the last line in the history buffer, not masked
 int         historyLine;     // the line being displayed from history buffer
                                  // will be <= nextHistoryLine
 
+#define     MAX_CONSOLE_SAVE_BUFFER ( COMMAND_HISTORY * (MAX_EDIT_LINE + 13) )
+
 static void Con_LoadHistory( void );
 static void Con_SaveHistory( void );
 
@@ -29,9 +24,11 @@ static void Con_SaveHistory( void );
 Con_ResetHistory
 ================
 */
-void Con_ResetHistory( void ) 
+void Con_ResetHistory( void )
 {
 	historyLoaded = qfalse;
+	nextHistoryLine = 0;
+	historyLine = 0;
 }
 
 
@@ -40,9 +37,9 @@ void Con_ResetHistory( void )
 Con_SaveField
 ================
 */
-void Con_SaveField( const field_t *field ) 
+void Con_SaveField( const field_t *field )
 {
-	field_t *h;
+	const field_t *h;
 
 	if ( !field || field->buffer[0] == '\0' )
 		return;
@@ -55,7 +52,7 @@ void Con_SaveField( const field_t *field )
 	// try to avoid inserting duplicates
 	if ( nextHistoryLine > 0 ) {
 		h = &historyEditLines[(nextHistoryLine-1) % COMMAND_HISTORY];
-		if ( !memcmp( field, h, sizeof( *field ) ) ) {
+		if ( field->cursor == h->cursor && field->scroll == h->scroll && !strcmp( field->buffer, h->buffer ) ) {
 			historyLine = nextHistoryLine;
 			return;
 		}
@@ -69,27 +66,45 @@ void Con_SaveField( const field_t *field )
 }
 
 
-void Con_HistoryGetPrev( field_t *field ) 
+/*
+================
+Con_HistoryGetPrev
+
+returns qtrue if previously returned edit field needs to be updated
+================
+*/
+qboolean Con_HistoryGetPrev( field_t *field )
 {
-	if ( !field )
-		return;
+	qboolean bresult;
 
 	if ( historyLoaded == qfalse ) {
 		historyLoaded = qtrue;
 		Con_LoadHistory();
 	}
 
-	if ( nextHistoryLine - historyLine < COMMAND_HISTORY && historyLine > 0 )
+	if ( nextHistoryLine - historyLine < COMMAND_HISTORY && historyLine > 0 ) {
+		bresult = qtrue;
 		historyLine--;
+	} else {
+		bresult = qfalse;
+	}
 
 	*field = historyEditLines[ historyLine % COMMAND_HISTORY ];
+
+	return bresult;
 }
 
 
-void Con_HistoryGetNext( field_t *field ) 
+/*
+================
+Con_HistoryGetNext
+
+returns qtrue if previously returned edit field needs to be updated
+================
+*/
+qboolean Con_HistoryGetNext( field_t *field )
 {
-	if ( !field )
-		return;
+	qboolean bresult;
 
 	if ( historyLoaded == qfalse ) {
 		historyLoaded = qtrue;
@@ -99,12 +114,18 @@ void Con_HistoryGetNext( field_t *field )
 	historyLine++;
 
 	if ( historyLine >= nextHistoryLine ) {
+		if ( historyLine == nextHistoryLine )
+			bresult = qtrue;
+		else
+			bresult = qfalse;
 		historyLine = nextHistoryLine;
 		Field_Clear( field );
-		return;
+		return bresult;
 	}
 
 	*field = historyEditLines[ historyLine % COMMAND_HISTORY ];
+
+	return qtrue;
 }
 
 
@@ -115,8 +136,11 @@ Con_LoadHistory
 */
 static void Con_LoadHistory( void )
 {
+	char consoleSaveBuffer[ MAX_CONSOLE_SAVE_BUFFER ];
+	int  consoleSaveBufferSize;
 	const char *token, *text_p;
 	int i, numChars, numLines = 0;
+	field_t *edit;
 	fileHandle_t f;
 
 	for ( i = 0 ; i < COMMAND_HISTORY ; i++ ) {
@@ -138,29 +162,41 @@ static void Con_LoadHistory( void )
 
 		for( i = COMMAND_HISTORY - 1; i >= 0; i-- )
 		{
-			if( !*( token = COM_Parse( &text_p ) ) )
+			if ( !*( token = COM_Parse( &text_p ) ) )
 				break;
 
-			historyEditLines[ i ].cursor = atoi( token );
+			edit = &historyEditLines[ i ];
 
-			if( !*( token = COM_Parse( &text_p ) ) )
+			edit->cursor = atoi( token );
+
+			if ( !*( token = COM_Parse( &text_p ) ) )
 				break;
 
-			historyEditLines[ i ].scroll = atoi( token );
+			edit->scroll = atoi( token );
 
 			if( !*( token = COM_Parse( &text_p ) ) )
 				break;
 
 			numChars = atoi( token );
 			text_p++;
-			if( numChars > ( strlen( consoleSaveBuffer ) -	( text_p - consoleSaveBuffer ) ) )
+			if ( numChars > ( consoleSaveBufferSize - ( text_p - consoleSaveBuffer ) ) || numChars >= sizeof( edit->buffer ) )
 			{
 				Com_DPrintf( S_COLOR_YELLOW "WARNING: probable corrupt history\n" );
 				break;
 			}
-			Com_Memcpy( historyEditLines[ i ].buffer,
-					text_p, numChars );
-			historyEditLines[ i ].buffer[ numChars ] = '\0';
+
+			if ( edit->cursor > sizeof( edit->buffer ) - 1 )
+				edit->cursor = sizeof( edit->buffer ) - 1;
+			else if ( edit->cursor < 0 )
+				edit->cursor = 0;
+
+			if ( edit->scroll > edit->cursor )
+				edit->scroll = edit->cursor;
+			else if ( edit->scroll < 0 )
+				edit->scroll = 0;
+
+			Com_Memcpy( edit->buffer, text_p, numChars );
+			edit->buffer[ numChars ] = '\0';
 			text_p += numChars;
 
 			numLines++;
@@ -187,13 +223,15 @@ Con_SaveHistory
 */
 static void Con_SaveHistory( void )
 {
+	char            consoleSaveBuffer[ MAX_CONSOLE_SAVE_BUFFER ];
+	int             consoleSaveBufferSize;
 	int             i;
 	int             lineLength, saveBufferLength, additionalLength;
 	fileHandle_t    f;
 
 	consoleSaveBuffer[ 0 ] = '\0';
 
-	i = ( nextHistoryLine - 1 ) % COMMAND_HISTORY;
+	i = ( nextHistoryLine - 1 + COMMAND_HISTORY ) % COMMAND_HISTORY;
 	do
 	{
 		if( historyEditLines[ i ].buffer[ 0 ] )
@@ -202,7 +240,7 @@ static void Con_SaveHistory( void )
 			saveBufferLength = strlen( consoleSaveBuffer );
 
 			//ICK
-			additionalLength = lineLength + strlen( "999 999 999  " );
+			additionalLength = lineLength + 13; // strlen( "999 999 999  " )
 
 			if( saveBufferLength + additionalLength < MAX_CONSOLE_SAVE_BUFFER )
 			{
@@ -218,7 +256,7 @@ static void Con_SaveHistory( void )
 		}
 		i = ( i - 1 + COMMAND_HISTORY ) % COMMAND_HISTORY;
 	}
-	while( i != ( nextHistoryLine - 1 ) % COMMAND_HISTORY );
+	while( i != ( nextHistoryLine - 1 + COMMAND_HISTORY ) % COMMAND_HISTORY );
 
 	consoleSaveBufferSize = strlen( consoleSaveBuffer );
 

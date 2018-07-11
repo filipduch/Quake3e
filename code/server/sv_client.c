@@ -209,8 +209,9 @@ void SV_DirectConnect( const netadr_t *from ) {
 	int			startIndex;
 	intptr_t	denied;
 	int			count;
-	const char	*ip, *info;
+	const char	*ip, *info, *v;
 	qboolean	compat = qfalse;
+	qboolean	longstr;
 
 	Com_DPrintf( "SVC_DirectConnect()\n" );
 
@@ -250,7 +251,16 @@ void SV_DirectConnect( const netadr_t *from ) {
 
 	// verify challenge in first place
 	info = Cmd_Argv( 1 );
-	challenge = atoi( Info_ValueForKey( info, "challenge" ) );
+	v = Info_ValueForKey( info, "challenge" );
+	if ( *v == '\0' )
+	{
+		if ( !SVC_RateLimit( &bucket, 10, 200 ) )
+		{
+			NET_OutOfBandPrint( NS_SERVER, from, "print\nMissing challenge in userinfo.\n" );
+		}
+		return;
+	}
+	challenge = atoi( v );
 
 	// see if the challenge is valid (localhost clients don't need to challenge)
 	if ( !NET_IsLocalAddress( from ) )
@@ -269,7 +279,16 @@ void SV_DirectConnect( const netadr_t *from ) {
 
 	Q_strncpyz( userinfo, info, sizeof( userinfo ) );
 
-	version = atoi( Info_ValueForKey( userinfo, "protocol" ) );
+	v = Info_ValueForKey( userinfo, "protocol" );
+	if ( *v == '\0' )
+	{
+		if ( !SVC_RateLimit( &bucket, 10, 200 ) )
+		{
+			NET_OutOfBandPrint( NS_SERVER, from, "print\nMissing protocol in userinfo.\n" );
+		}
+		return;
+	}
+	version = atoi( v );
 	
 	if ( version == PROTOCOL_VERSION )
 		compat = qtrue;
@@ -288,6 +307,30 @@ void SV_DirectConnect( const netadr_t *from ) {
 		}
 	}
 
+	v = Info_ValueForKey( userinfo, "qport" );
+	if ( *v == '\0' )
+	{
+		if ( !SVC_RateLimit( &bucket, 10, 200 ) )
+		{
+			NET_OutOfBandPrint( NS_SERVER, from, "print\nMissing qport in userinfo.\n" );
+		}
+		return;
+	}
+	qport = atoi( Info_ValueForKey( userinfo, "qport" ) );
+
+	// if "client" is present in userinfo and it is a modern client
+	// then assume it can properly decode long strings
+	if ( !compat && *Info_ValueForKey( userinfo, "client" ) != '\0' )
+		longstr = qtrue;
+	else
+		longstr = qfalse;
+
+	// we don't need these keys after connection, release some space in userinfo
+	Info_RemoveKey( userinfo, "challenge" );
+	Info_RemoveKey( userinfo, "qport" );
+	Info_RemoveKey( userinfo, "protocol" );
+	Info_RemoveKey( userinfo, "client" );
+
 	// don't let "ip" overflow userinfo string
 	if ( NET_IsLocalAddress( from ) )
 		ip = "localhost";
@@ -305,8 +348,6 @@ void SV_DirectConnect( const netadr_t *from ) {
 
 	// restore burst capacity
 	SVC_RateRestoreBurstAddress( from, 10, 1000 );
-
-	qport = atoi( Info_ValueForKey( userinfo, "qport" ) );
 
 	// quick reject
 	newcl = NULL;
@@ -369,7 +410,7 @@ void SV_DirectConnect( const netadr_t *from ) {
 		startIndex = sv_privateClients->integer;
 	}
 
-	if ( newcl >= svs.clients + startIndex && newcl->state == CS_FREE ) {
+	if ( newcl && newcl >= svs.clients + startIndex && newcl->state == CS_FREE ) {
 		Com_Printf( "%s: reuse slot %i\n", NET_AdrToString( from ), (int)(newcl - svs.clients) );
 		goto gotnewcl;
 	}
@@ -434,6 +475,8 @@ gotnewcl:
 	// save the userinfo
 	Q_strncpyz( newcl->userinfo, userinfo, sizeof(newcl->userinfo) );
 
+	newcl->longstr = longstr;
+
 	// get the game a chance to reject this connection or modify the userinfo
 	denied = VM_Call( gvm, GAME_CLIENT_CONNECT, clientNum, qtrue, qfalse ); // firstTime = qtrue
 	if ( denied ) {
@@ -453,7 +496,7 @@ gotnewcl:
 	Com_DPrintf( "Going from CS_FREE to CS_CONNECTED for %s\n", newcl->name );
 
 	newcl->state = CS_CONNECTED;
-	newcl->lastSnapshotTime = 0;
+	newcl->lastSnapshotTime = svs.time - 9999; // generate a snapshot immediately
 	newcl->lastPacketTime = svs.time;
 	newcl->lastConnectTime = svs.time;
 
@@ -599,13 +642,13 @@ int SV_RemainingGameState( void )
 		if ( start == CS_SERVERINFO ) {
 			MSG_WriteByte( &msg, svc_configstring );
 			MSG_WriteShort( &msg, start );
-			MSG_WriteBigString( &msg, Cvar_InfoString( CVAR_SERVERINFO ) );
+			MSG_WriteBigString( &msg, Cvar_InfoString( CVAR_SERVERINFO, NULL ) );
 			continue;
 		}
 		if ( start == CS_SYSTEMINFO ) {
 			MSG_WriteByte( &msg, svc_configstring );
 			MSG_WriteShort( &msg, start );
-			MSG_WriteBigString( &msg, Cvar_InfoString_Big( CVAR_SYSTEMINFO ) );
+			MSG_WriteBigString( &msg, Cvar_InfoString_Big( CVAR_SYSTEMINFO, NULL ) );
 			continue;
 		}
 		if ( sv.configstrings[start][0] ) {
@@ -761,7 +804,7 @@ void SV_ClientEnterWorld( client_t *client, usercmd_t *cmd ) {
 	client->gentity = ent;
 
 	client->deltaMessage = -1;
-	client->lastSnapshotTime = 0;	// generate a snapshot immediately
+	client->lastSnapshotTime = svs.time - 9999; // generate a snapshot immediately
 
 	if(cmd)
 		memcpy(&client->lastUsercmd, cmd, sizeof(client->lastUsercmd));
@@ -1311,7 +1354,7 @@ static void SV_VerifyPaks_f( client_t *cl ) {
 			cl->pureAuthentic = qtrue;
 		} else {
 			cl->pureAuthentic = qfalse;
-			cl->lastSnapshotTime = 0;
+			cl->lastSnapshotTime = svs.time - 9999; // generate a snapshot immediately
 			cl->state = CS_ZOMBIE; // skip delta generation
 			SV_SendClientSnapshot( cl );
 			cl->state = CS_ACTIVE;
@@ -1346,7 +1389,7 @@ void SV_UserinfoChanged( client_t *cl, qboolean updateUserinfo ) {
 	int	i;
 
 	if ( cl->netchan.remoteAddress.type == NA_BOT ) {
-		cl->lastSnapshotTime = 0;
+		cl->lastSnapshotTime = svs.time - 9999; // generate a snapshot immediately
 		cl->snapshotMsec = 1000 / sv_fps->integer;
 		cl->rate = 0;
 		return;
@@ -1394,7 +1437,7 @@ void SV_UserinfoChanged( client_t *cl, qboolean updateUserinfo ) {
 	if ( i != cl->snapshotMsec )
 	{
 		// Reset last sent snapshot so we avoid desync between server frame time and snapshot send time
-		cl->lastSnapshotTime = 0;
+		cl->lastSnapshotTime = svs.time - 9999; // generate a snapshot immediately
 		cl->snapshotMsec = i;
 	}
 
@@ -1411,13 +1454,6 @@ void SV_UserinfoChanged( client_t *cl, qboolean updateUserinfo ) {
 			Info_SetValueForKey( cl->userinfo, "handicap", "100" );
 		}
 	}
-
-	// if "client" is present in userinfo and it is a modern client
-	// then assume it can properly decode long strings
-	if ( !cl->compat && *Info_ValueForKey( cl->userinfo, "client" ) )
-		cl->longstr = qtrue;
-	else
-		cl->longstr = qfalse;
 
 	// TTimo
 	// maintain the IP information

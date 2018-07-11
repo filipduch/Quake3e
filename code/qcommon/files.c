@@ -311,7 +311,7 @@ static fileHandleData_t	fsh[MAX_FILE_HANDLES];
 
 // TTimo - https://zerowing.idsoftware.com/bugzilla/show_bug.cgi?id=540
 // wether we did a reorder on the current search path when joining the server
-static qboolean fs_reordered;
+qboolean fs_reordered;
 
 #define MAX_REF_PAKS	MAX_STRING_TOKENS
 
@@ -325,10 +325,6 @@ static char		*fs_serverPakNames[MAX_REF_PAKS];		// pk3 names
 static int		fs_numServerReferencedPaks;
 static int		fs_serverReferencedPaks[MAX_REF_PAKS];		// checksums
 static char		*fs_serverReferencedPakNames[MAX_REF_PAKS];	// pk3 names
-
-// last valid game folder used
-static char	lastValidBase[MAX_OSPATH];
-static char	lastValidGame[MAX_OSPATH];
 
 int	fs_lastPakIndex;
 
@@ -3536,6 +3532,13 @@ void FS_Shutdown( qboolean closemfp )
 		}
 	}
 
+#ifdef DELAY_WRITECONFIG
+	if ( fs_searchpaths )
+	{
+		Com_WriteConfiguration();
+	}
+#endif
+
 	// free everything
 	for( p = fs_searchpaths; p; p = next )
 	{
@@ -4281,17 +4284,7 @@ void FS_InitFilesystem( void ) {
 #endif
 
 	// try to start up normally
-	FS_Startup();
-
-	// if we can't find default.cfg, assume that the paths are
-	// busted and error out now, rather than getting an unreadable
-	// graphics screen when the font fails to load
-	if ( FS_ReadFile( "default.cfg", NULL ) <= 0 ) {
-		Com_Error( ERR_FATAL, "Couldn't load default.cfg" );
-	}
-
-	Q_strncpyz(lastValidBase, fs_basepath->string, sizeof(lastValidBase));
-	Q_strncpyz(lastValidGame, fs_gamedirvar->string, sizeof(lastValidGame));
+	FS_Restart( 0 );
 }
 
 
@@ -4301,6 +4294,10 @@ FS_Restart
 ================
 */
 void FS_Restart( int checksumFeed ) {
+
+	// last valid game folder used
+	static char lastValidBase[MAX_OSPATH];
+	static char lastValidGame[MAX_OSPATH];
 
 	static qboolean execConfig = qfalse;
 

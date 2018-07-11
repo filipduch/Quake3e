@@ -175,7 +175,7 @@ void GL_Cull( int cullType ) {
 /*
 ** GL_TexEnv
 */
-void GL_TexEnv( int env )
+void GL_TexEnv( GLint env )
 {
 	if ( env == glState.texEnv[glState.currenttmu] )
 	{
@@ -184,20 +184,13 @@ void GL_TexEnv( int env )
 
 	glState.texEnv[glState.currenttmu] = env;
 
-
 	switch ( env )
 	{
 	case GL_MODULATE:
-		qglTexEnvi( GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE );
-		break;
 	case GL_REPLACE:
-		qglTexEnvi( GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE );
-		break;
 	case GL_DECAL:
-		qglTexEnvi( GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_DECAL );
-		break;
 	case GL_ADD:
-		qglTexEnvi( GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_ADD );
+		qglTexEnvi( GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, env );
 		break;
 	default:
 		ri.Error( ERR_DROP, "GL_TexEnv: invalid env '%d' passed", env );
@@ -448,6 +441,7 @@ static void RB_BeginDrawingView( void ) {
 		qglFinish();
 		glState.finishCalled = qtrue;
 	}
+
 	if ( r_finish->integer == 0 ) {
 		glState.finishCalled = qtrue;
 	}
@@ -998,8 +992,9 @@ void RE_StretchRaw( int x, int y, int w, int h, int cols, int rows, const byte *
 		VBO_UnBind();
 	}
 
-	// sync with gl if needed
-	if ( r_finish->integer == 1 ) {
+	if ( backEnd.doneSurfaces ) {
+		// make sure that we rendered some surfaces before
+		// otherwise some (Intel GMA) drivers may stuck between two consecutive glFinish calls
 		qglFinish();
 	}
 
@@ -1300,9 +1295,7 @@ void RB_ShowImages( void ) {
 
 	qglClear( GL_COLOR_BUFFER_BIT );
 
-	if ( r_finish->integer == 1 ) {
-		qglFinish();
-	}
+	qglFinish();
 
 	start = ri.Milliseconds();
 
@@ -1333,9 +1326,7 @@ void RB_ShowImages( void ) {
 		qglEnd();
 	}
 
-	if ( r_finish->integer == 1 ) {
-		qglFinish();
-	}
+	qglFinish();
 
 	end = ri.Milliseconds();
 	ri.Printf( PRINT_ALL, "%i msec to draw all images\n", end - start );
@@ -1388,14 +1379,24 @@ static const void *RB_FinishBloom( const void *data )
 {
 	const finishBloomCommand_t *cmd = data;
 
-	if ( r_bloom->integer && fboEnabled )
+	if ( fboEnabled )
 	{
-		if ( !backEnd.doneBloom && backEnd.doneSurfaces )
+		// let's always render console with the same quality
+		if ( blitMSfbo )
 		{
-			if ( !backEnd.projection2D )
-				RB_SetGL2D();
-			qglColor4f( 1, 1, 1, 1 );
-			FBO_Bloom( 0, 0, qfalse );
+			FBO_BlitMS( qfalse );
+			blitMSfbo = qfalse;
+		}
+
+		if ( r_bloom->integer )
+		{
+			if ( !backEnd.doneBloom && backEnd.doneSurfaces )
+			{
+				if ( !backEnd.projection2D )
+					RB_SetGL2D();
+				qglColor4f( 1, 1, 1, 1 );
+				FBO_Bloom( 0, 0, qfalse );
+			}
 		}
 	}
 
@@ -1421,27 +1422,34 @@ static const void *RB_SwapBuffers( const void *data ) {
 
 	cmd = (const swapBuffersCommand_t *)data;
 
-	if ( r_finish->integer == 1 && !glState.finishCalled ) {
+	if ( backEnd.doneSurfaces && !glState.finishCalled ) {
 		qglFinish();
 	}
 
-	FBO_PostProcess();
+	if ( fboEnabled ) {
+		FBO_PostProcess();
+	}
 
 	if ( backEnd.screenshotMask && tr.frameCount > 1 ) {
+
+		if ( superSampled ) {
+			FBO_BlitSS();
+		}
+
 		if ( backEnd.screenshotMask & SCREENSHOT_TGA && backEnd.screenshotTGA[0] ) {
-			RB_TakeScreenshot( 0, 0, glConfig.vidWidth, glConfig.vidHeight, backEnd.screenshotTGA );
+			RB_TakeScreenshot( 0, 0, captureWidth, captureHeight, backEnd.screenshotTGA );
 			if ( !backEnd.screenShotTGAsilent ) {
 				ri.Printf( PRINT_ALL, "Wrote %s\n", backEnd.screenshotTGA );
 			}
 		}
 		if ( backEnd.screenshotMask & SCREENSHOT_JPG && backEnd.screenshotJPG[0] ) {
-			RB_TakeScreenshotJPEG( 0, 0, glConfig.vidWidth, glConfig.vidHeight, backEnd.screenshotJPG );
+			RB_TakeScreenshotJPEG( 0, 0, captureWidth, captureHeight, backEnd.screenshotJPG );
 			if ( !backEnd.screenShotJPGsilent ) {
 				ri.Printf( PRINT_ALL, "Wrote %s\n", backEnd.screenshotJPG );
 			}
 		}
 		if ( backEnd.screenshotMask & SCREENSHOT_BMP && ( backEnd.screenshotBMP[0] || ( backEnd.screenshotMask & SCREENSHOT_BMP_CLIPBOARD ) ) ) {
-			RB_TakeScreenshotBMP( 0, 0, glConfig.vidWidth, glConfig.vidHeight, backEnd.screenshotBMP, backEnd.screenshotMask & SCREENSHOT_BMP_CLIPBOARD );
+			RB_TakeScreenshotBMP( 0, 0, captureWidth, captureHeight, backEnd.screenshotBMP, backEnd.screenshotMask & SCREENSHOT_BMP_CLIPBOARD );
 			if ( !backEnd.screenShotBMPsilent ) {
 				ri.Printf( PRINT_ALL, "Wrote %s\n", backEnd.screenshotBMP );
 			}

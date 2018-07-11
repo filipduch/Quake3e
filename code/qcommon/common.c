@@ -47,7 +47,7 @@ const int demo_protocols[] = { 66, 67, PROTOCOL_VERSION, NEW_PROTOCOL_VERSION, 0
 #define DEF_COMHUNKMEGS		128
 #endif
 #ifdef USE_MULTI_SEGMENT
-#define DEF_COMZONEMEGS		9
+#define DEF_COMZONEMEGS		12
 #else
 #define DEF_COMZONEMEGS		25
 #endif
@@ -112,7 +112,6 @@ int			com_frameNumber;
 
 qboolean	com_errorEntered = qfalse;
 qboolean	com_fullyInitialized = qfalse;
-qboolean	com_gameRestarting = qfalse;
 
 // renderer window states
 qboolean	gw_minimized = qfalse; // this will be always true for dedicated servers
@@ -263,7 +262,7 @@ void QDECL Com_DPrintf( const char *fmt, ...) {
 	Q_vsnprintf( msg, sizeof( msg ), fmt, argptr );
 	va_end( argptr );
 
-	Com_Printf( "%s", msg );
+	Com_Printf( S_COLOR_CYAN "%s", msg );
 }
 
 
@@ -948,6 +947,9 @@ typedef struct memzone_s {
 	int		totalSize;
 	int		totalUsed;
 	int		segnum;
+	int		failed;	// size of last failed allocation
+					// so any following allocations with sizes
+					// greater or equal than this will also fail
 #endif
 } memzone_t;
 
@@ -985,6 +987,7 @@ static void Z_ClearZone( memzone_t *zone, int size ) {
 	block->id = ZONEID;
 #ifdef USE_MULTI_SEGMENT
 	block->parent = zone;
+	zone->failed = size - sizeof(memzone_t) + 1;
 #endif
 	block->size = size - sizeof(memzone_t);
 }
@@ -1083,6 +1086,12 @@ void Z_Free( void *ptr ) {
 		block->next = other->next;
 		block->next->prev = block;
 	}
+
+#ifdef USE_MULTI_SEGMENT
+	if ( block->size > zone->failed ) {
+		zone->failed = block->size + 1;
+	}
+#endif
 }
 
 
@@ -1128,7 +1137,7 @@ void *Z_TagMallocDebug( int size, memtag_t tag, char *label, char *file, int lin
 void *Z_TagMalloc( int size, memtag_t tag ) {
 #endif
 	int		extra;
-	memblock_t	*start, *rover, *new, *base;
+	memblock_t	*start, *rover, *base;
 	memzone_t *zone;
 #ifdef USE_MULTI_SEGMENT
 	memzone_t *newz;
@@ -1150,15 +1159,15 @@ void *Z_TagMalloc( int size, memtag_t tag ) {
 	// scan through the block list looking for the first free block
 	// of sufficient size
 	//
-	size += sizeof(memblock_t);	// account for size of block header
+	size += sizeof( *base );	// account for size of block header
 	size += 4;					// space for memory trash tester
 	size = PAD(size, sizeof(intptr_t));		// align to 32/64 bit boundary
 
 	base = rover = zone->rover;
 	start = base->prev;
-	
+
 	do {
-		if ( rover == start ) {
+		if ( rover == start || size >= zone->failed ) {
 #ifdef USE_MULTI_SEGMENT
 			// try to swich to next zone segment
 			/*if ( tag != TAG_SMALL )*/ {
@@ -1177,6 +1186,7 @@ void *Z_TagMalloc( int size, memtag_t tag ) {
 						newz->segnum = zone->segnum + 1;
 					}
 				}
+				zone->failed = size;
 				zone = zone->next;
 				if ( zone ) {
 					// these operations will take more time than regular allocations from primary zone
@@ -1212,19 +1222,20 @@ void *Z_TagMalloc( int size, memtag_t tag ) {
 	// found a block big enough
 	//
 	extra = base->size - size;
-	if (extra > MINFRAGMENT) {
+	if ( extra >= MINFRAGMENT ) {
+		memblock_t *fragment;
 		// there will be a free fragment after the allocated block
-		new = (memblock_t *) ((byte *)base + size );
-		new->size = extra;
-		new->tag = TAG_FREE; // free block
-		new->prev = base;
-		new->id = ZONEID;
-		new->next = base->next;
-		new->next->prev = new;
+		fragment = (memblock_t *) ((byte *)base + size );
+		fragment->size = extra;
+		fragment->tag = TAG_FREE; // free block
+		fragment->prev = base;
+		fragment->id = ZONEID;
+		fragment->next = base->next;
+		fragment->next->prev = fragment;
 #ifdef USE_MULTI_SEGMENT
-		new->parent = zone;
+		fragment->parent = zone;
 #endif
-		base->next = new;
+		base->next = fragment;
 		base->size = size;
 	}
 	
@@ -1247,7 +1258,7 @@ void *Z_TagMalloc( int size, memtag_t tag ) {
 	// marker for memory trash testing
 	*(int *)((byte *)base + base->size - 4) = ZONEID;
 
-	return (void *) ((byte *)base + sizeof(memblock_t));
+	return (void *) ( (byte *)base + sizeof( *base ) );
 }
 
 
@@ -2728,14 +2739,16 @@ Com_GameRestart
 Change to a new mod properly with cleaning up cvars before switching.
 ==================
 */
-void Com_GameRestart(int checksumFeed, qboolean clientRestart)
+void Com_GameRestart( int checksumFeed, qboolean clientRestart )
 {
+	static qboolean com_gameRestarting = qfalse;
+
 	// make sure no recursion can be triggered
-	if(!com_gameRestarting && com_fullyInitialized)
+	if ( !com_gameRestarting && com_fullyInitialized )
 	{
 		com_gameRestarting = qtrue;
-#ifndef DEDICATED		
-		if( clientRestart )
+#ifndef DEDICATED
+		if ( clientRestart )
 		{
 			CL_Disconnect( qfalse );
 			CL_ShutdownAll();
@@ -2744,15 +2757,29 @@ void Com_GameRestart(int checksumFeed, qboolean clientRestart)
 #endif
 
 		// Kill server if we have one
-		if( com_sv_running->integer )
-			SV_Shutdown("Game directory changed");
+		if ( com_sv_running->integer )
+			SV_Shutdown( "Game directory changed" );
 
-		FS_Restart(checksumFeed);
-	
+		// Reset console command history
+		Con_ResetHistory();
+
+		// Shutdown FS early so Cvar_Restart will not reset old game cvars
+		FS_Shutdown( qfalse );
+
 		// Clean out any user and VM created cvars
-		Cvar_Restart(qtrue);
+		Cvar_Restart( qtrue );
+
+#ifndef DEDICATED
+		// Reparse pure paks and update cvars before FS startup
+		if ( CL_GameSwitch() )
+			CL_SystemInfoChanged( qfalse );
+#endif
+
+		FS_Restart( checksumFeed );
+	
+		// Load new configuration
 		Com_ExecuteCfg();
-		
+	
 #ifndef DEDICATED
 		// Restart sound subsystem so old handles are flushed
 		//CL_Snd_Restart();
@@ -3328,11 +3355,6 @@ void Com_Init( char *commandLine ) {
 	s = va( "%s %s %s", Q3_VERSION, PLATFORM_STRING, __DATE__ );
 	com_version = Cvar_Get( "version", s, CVAR_PROTECTED | CVAR_ROM | CVAR_SERVERINFO );
 
-#ifndef DEDICATED
-	// for now - this will be used to inform server about q3msgboom fix
-	Cvar_Get( "client", Q3_VERSION, CVAR_PROTECTED | CVAR_ROM | CVAR_USERINFO );
-#endif
-
 	// this cvar is the single entry point of the entire extension system
 	Cvar_Get( "//trap_GetValue", va( "%i", COM_TRAP_GETVALUE ), CVAR_PROTECTED | CVAR_ROM );
 
@@ -3437,7 +3459,7 @@ Com_WriteConfiguration
 Writes key bindings and archived cvars to config file if modified
 ===============
 */
-static void Com_WriteConfiguration( void ) {
+void Com_WriteConfiguration( void ) {
 #ifndef DEDICATED
 	const char *basegame;
 	const char *gamedir;
@@ -3605,7 +3627,9 @@ void Com_Frame( qboolean noDelay ) {
 	timeAfter = 0;
 
 	// write config file if anything changed
+#ifndef DELAY_WRITECONFIG
 	Com_WriteConfiguration();
+#endif
 
 	// if "viewlog" has been modified, show or hide the log console
 	if ( com_viewlog->modified ) {

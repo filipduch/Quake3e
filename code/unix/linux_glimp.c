@@ -617,7 +617,9 @@ static qboolean directMap( const byte chr )
 		case 'h'-'a'+1:
 		case 'a'-'a'+1:
 		case 'e'-'a'+1:
-		case 0xC: // CTRL+L
+		case 'n'-'a'+1:
+		case 'p'-'a'+1:
+		case 'l'-'a'+1: // CTRL+L
 			return qtrue;
 	}
 	if ( chr < ' ' || chr > 127 || in_forceCharset->integer > 1 )
@@ -1705,7 +1707,7 @@ char *Sys_GetClipboardData( void )
 	XSync( dpy, False );
 	XNextEvent( dpy, &ev );
 	if ( !XFilterEvent( &ev, None ) && ev.type == SelectionNotify ) {
-		if ( XGetWindowProperty( dpy, win, XA_PRIMARY, 0, 8, False, AnyPropertyType,
+		if ( XGetWindowProperty( dpy, win, XA_PRIMARY, 0, MAX_EDIT_LINE/4, False, AnyPropertyType,
 			&type, &format, &nitems, &rem, &data ) == 0 ) {
 			if ( format == 8 ) {
 				if ( nitems > 0 ) {

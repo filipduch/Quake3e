@@ -44,6 +44,7 @@ typedef unsigned int glIndex_t;
 // see QSORT_SHADERNUM_SHIFT
 #define SHADERNUM_BITS	14
 #define MAX_SHADERS		(1<<SHADERNUM_BITS)
+#define SHADERNUM_MASK	(MAX_SHADERS-1)
 
 typedef struct dlight_s {
 	vec3_t	origin;
@@ -299,6 +300,7 @@ typedef struct {
 	byte			constantColor[4];			// for CGEN_CONST and AGEN_CONST
 
 	unsigned		stateBits;					// GLS_xxxx mask
+	GLint			mtEnv;						// 0, GL_MODULATE, GL_ADD, GL_DECAL
 
 	acff_t			adjustColorsForFog;
 
@@ -359,14 +361,14 @@ typedef struct shader_s {
 
 	float		portalRange;			// distance to fog out at
 
-	int			multitextureEnv;		// 0, GL_MODULATE, GL_ADD (FIXME: put in stage)
+	qboolean	multitextureEnv;		// if shader has multitexture stage(s)
 
 	cullType_t	cullType;				// CT_FRONT_SIDED, CT_BACK_SIDED, or CT_TWO_SIDED
 	qboolean	polygonOffset;			// set for decals and other items that must be offset 
 	
-	qboolean	noMipMaps:1;			// for console fonts, 2D elements, etc.
-	qboolean	noPicMip:1;				// for images that must always be full resolution
-	qboolean	noLightScale:1;
+	unsigned	noMipMaps:1;			// for console fonts, 2D elements, etc.
+	unsigned	noPicMip:1;				// for images that must always be full resolution
+	unsigned	noLightScale:1;
 
 	fogPass_t	fogPass;				// draw a blended pass, possibly with depth test equals
 
@@ -391,7 +393,7 @@ typedef struct shader_s {
 	short		vboFPindex;
 	qboolean	hasScreenMap;
 
-	float		lightmapOffset[2];
+	float		lightmapOffset[2];	// within merged lightmap
 
 	void	(*optimalStageIteratorFunc)( void );
 
@@ -903,7 +905,7 @@ typedef struct {
 	GLuint		currenttextures[ MAX_TEXTURE_UNITS ];
 	int			currenttmu;
 	qboolean	finishCalled;
-	int			texEnv[2];
+	GLint		texEnv[2];
 	int			faceCulling;
 	unsigned long	glStateBits;
 } glstate_t;
@@ -955,7 +957,7 @@ typedef struct {
 	orientationr_t	or;
 	backEndCounters_t	pc;
 	qboolean	isHyperspace;
-	trRefEntity_t	*currentEntity;
+	const trRefEntity_t *currentEntity;
 	qboolean	skyRenderedThisView;	// flag for drawing sun
 
 	qboolean	projection2D;	// if qtrue, drawstretchpic doesn't need to change modes
@@ -1079,11 +1081,21 @@ typedef struct {
 
 	qboolean				mapLoading;
 	qboolean				needScreenMap;
+
 } trGlobals_t;
 
 extern backEndState_t	backEnd;
 extern trGlobals_t	tr;
 extern glstate_t	glState;		// outside of TR since it shouldn't be cleared during ref re-init
+
+	// unmodified width/height according to actual \r_mode*
+extern	int					windowWidth;
+extern	int					windowHeight;
+extern	qboolean			windowAdjusted;
+
+extern	int					captureWidth;
+extern	int					captureHeight;
+extern	qboolean			superSampled;
 
 //
 // cvars
@@ -1259,7 +1271,7 @@ void	GL_BindTexture( int unit, GLuint texnum );
 void	GL_TextureMode( const char *string );
 void	GL_CheckErrors( void );
 void	GL_State( unsigned long stateVector );
-void	GL_TexEnv( int env );
+void	GL_TexEnv( GLint env );
 void	GL_Cull( int cullType );
 
 #define GLS_SRCBLEND_ZERO						0x00000001
@@ -1417,8 +1429,8 @@ void RB_StageIteratorSky( void );
 void RB_StageIteratorVertexLitTexture( void );
 void RB_StageIteratorLightmappedMultitexture( void );
 
-void RB_AddQuadStamp( vec3_t origin, vec3_t left, vec3_t up, byte *color );
-void RB_AddQuadStampExt( vec3_t origin, vec3_t left, vec3_t up, byte *color, float s1, float t1, float s2, float t2 );
+void RB_AddQuadStamp( const vec3_t origin, const vec3_t left, const vec3_t up, const byte *color );
+void RB_AddQuadStampExt( const vec3_t origin, const vec3_t left, const vec3_t up, const byte *color, float s1, float t1, float s2, float t2 );
 
 void RB_ShowImages( void );
 
@@ -1488,6 +1500,7 @@ extern qboolean		blitMSfbo;
 void FBO_BindMain( void );
 void FBO_PostProcess( void );
 void FBO_BlitMS( qboolean depthOnly );
+void FBO_BlitSS( void );
 qboolean FBO_Bloom( const float gamma, const float obScale, qboolean finalPass );
 void FBO_CopyScreen( void );
 GLuint FBO_ScreenTexture( void );
@@ -1752,7 +1765,7 @@ typedef struct {
 extern	int		max_polys;
 extern	int		max_polyverts;
 
-extern	backEndData_t	*backEndData;	// the second one may not be allocated
+extern	backEndData_t	*backEndData;
 
 void RB_ExecuteRenderCommands( const void *data );
 void RB_TakeScreenshot( int x, int y, int width, int height, const char *fileName );

@@ -25,7 +25,6 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #include "qcommon.h"
 
 #define MAX_CMD_BUFFER  65536
-#define MAX_CMD_LINE    1024
 
 typedef struct {
 	byte *data;
@@ -297,6 +296,12 @@ static void Cmd_Exec_f( void ) {
 		Com_Printf ("execing %s\n", filename);
 	
 	Cbuf_InsertText( f.c );
+
+#ifdef DELAY_WRITECONFIG
+	if ( !Q_stricmp( filename, Q3CONFIG_CFG ) ) {
+		Com_WriteConfiguration(); // to avoid loading outdated values
+	}
+#endif
 
 	FS_FreeFile( f.v );
 }

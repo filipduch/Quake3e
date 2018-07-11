@@ -62,19 +62,25 @@ static long generateHashValue( const char *fname ) {
 
 /*
 ============
-Cvar_ValidateString
+Cvar_ValidateName
 ============
 */
-static qboolean Cvar_ValidateString( const char *s ) {
+static qboolean Cvar_ValidateName( const char *name ) {
+	const char *s;
 	int c;
 	
-	if ( !s ) {
+	if ( !name ) {
 		return qfalse;
 	}
 
+	s = name;
 	while ( (c = *s++) != '\0' ) {
-		if ( c == '\\' || c == '\"' || c == ';' )
+		if ( c == '\\' || c == '\"' || c == ';' || c == '%' || c <= ' ' || c >= '~' )
 			return qfalse;
+	}
+
+	if ( (s - name) >= MAX_STRING_CHARS ) {
+		return qfalse;
 	}
 
 	return qtrue;
@@ -342,16 +348,16 @@ cvar_t *Cvar_Get( const char *var_name, const char *var_value, int flags ) {
 	long	hash;
 	int	index;
 
-	if ( !var_name || ! var_value ) {
+	if ( !var_name || !var_value ) {
 		Com_Error( ERR_FATAL, "Cvar_Get: NULL parameter" );
 	}
 
-	if ( !Cvar_ValidateString( var_name ) ) {
-		Com_Printf("invalid cvar name string: %s\n", var_name );
+	if ( !Cvar_ValidateName( var_name ) ) {
+		Com_Printf( "invalid cvar name string: %s\n", var_name );
 		var_name = "BADNAME";
 	}
 
-#if 0		// FIXME: values with backslash happen
+#if 0 // FIXME: values with backslash happen
 	if ( !Cvar_ValidateString( var_value ) ) {
 		Com_Printf("invalid cvar value string: %s\n", var_value );
 		var_value = "BADVALUE";
@@ -575,12 +581,12 @@ Prints the value, default, and latched string of the given variable
 void Cvar_Print( const cvar_t *v ) {
 
 	Com_Printf ("\"%s\" is:\"%s" S_COLOR_WHITE "\"",
-			v->name, v->string );
+		v->name, v->string );
 
 	if ( !( v->flags & CVAR_ROM ) ) {
-			Com_Printf (" default:\"%s" S_COLOR_WHITE "\"",
-					v->resetString );
-		}
+		Com_Printf (" default:\"%s" S_COLOR_WHITE "\"",
+			v->resetString );
+	}
 
 	Com_Printf ("\n");
 
@@ -604,8 +610,8 @@ cvar_t *Cvar_Set2( const char *var_name, const char *value, qboolean force ) {
 
 //	Com_DPrintf( "Cvar_Set2: %s %s\n", var_name, value );
 
-	if ( !Cvar_ValidateString( var_name ) ) {
-		Com_Printf("invalid cvar name string: %s\n", var_name );
+	if ( !Cvar_ValidateName( var_name ) ) {
+		Com_Printf( "invalid cvar name string: %s\n", var_name );
 		var_name = "BADNAME";
 	}
 
@@ -1309,42 +1315,32 @@ with the archive flag set to qtrue.
 void Cvar_WriteVariables( fileHandle_t f )
 {
 	cvar_t	*var;
-	char	buffer[1024];
+	char	buffer[MAX_CMD_LINE];
+	const char	*value;
 
 	if ( cvar_sort ) {
-		Com_DPrintf( "%s: sort cvars\n", __func__ );
 		cvar_sort = qfalse;
 		Cvar_Sort();
 	}
 
 	for (var = cvar_vars; var; var = var->next)
 	{
-		if(!var->name || Q_stricmp( var->name, "cl_cdkey" ) == 0)
+		if ( !var->name || Q_stricmp( var->name, "cl_cdkey" ) == 0 )
 			continue;
 
-		if( var->flags & CVAR_ARCHIVE ) {
+		if ( var->flags & CVAR_ARCHIVE ) {
 			// write the latched value, even if it hasn't taken effect yet
-			if ( var->latchedString ) {
-				if( strlen( var->name ) + strlen( var->latchedString ) + 10 > sizeof( buffer ) ) {
-					Com_Printf( S_COLOR_YELLOW "WARNING: value of variable "
-							"\"%s\" too long to write to file\n", var->name );
-					continue;
-				}
-				if ( (var->flags & CVAR_NODEFAULT) && !strcmp( var->latchedString, var->resetString ) ) {
-					continue;
-				}
-				Com_sprintf( buffer, sizeof(buffer), "seta %s \"%s\"" Q_NEWLINE, var->name, var->latchedString );
-			} else {
-				if( strlen( var->name ) + strlen( var->string ) + 10 > sizeof( buffer ) ) {
-					Com_Printf( S_COLOR_YELLOW "WARNING: value of variable "
-							"\"%s\" too long to write to file\n", var->name );
-					continue;
-				}
-				if ( (var->flags & CVAR_NODEFAULT) && !strcmp( var->string, var->resetString ) ) {
-					continue;
-				}
-				Com_sprintf( buffer, sizeof(buffer), "seta %s \"%s\"" Q_NEWLINE, var->name, var->string );
+			value = var->latchedString ? var->latchedString : var->string;
+			if ( strlen( var->name ) + strlen( value ) + 10 > sizeof( buffer ) ) {
+				Com_Printf( S_COLOR_YELLOW "WARNING: %svalue of variable \"%s\" too long to write to file\n", 
+					value == var->latchedString ? "latched " : "", var->name );
+				continue;
 			}
+			if ( (var->flags & CVAR_NODEFAULT) && !strcmp( value, var->resetString ) ) {
+				continue;
+			}
+			Com_sprintf( buffer, sizeof( buffer ), "seta %s \"%s\"" Q_NEWLINE, var->name, value );
+
 			FS_Write( buffer, strlen( buffer ), f );
 		}
 	}
@@ -1646,17 +1642,65 @@ static void Cvar_Restart_f( void )
 Cvar_InfoString
 =====================
 */
-char *Cvar_InfoString( int bit )
+const char *Cvar_InfoString( int bit, qboolean *truncated )
 {
 	static char	info[ MAX_INFO_STRING ];
+	const cvar_t *user_vars[ MAX_CVARS ];
+	const cvar_t *vm_vars[ MAX_CVARS ];
 	const cvar_t *var;
+	int user_count;
+	int vm_count;
+	int i;
+	qboolean allSet;
+
+	// sort to get more predictable output
+	if ( cvar_sort )
+	{
+		cvar_sort = qfalse;
+		Cvar_Sort();
+	}
 
 	info[0] = '\0';
+	user_count = 0;
+	vm_count = 0;
+	allSet = qtrue; // this will be qfalse on overflow
 
-	for( var = cvar_vars; var; var = var->next )
+	for ( var = cvar_vars; var; var = var->next )
 	{
 		if ( var->name && ( var->flags & bit ) )
-			Info_SetValueForKey( info, var->name, var->string );
+		{
+			// put vm/user-created cvars to the end
+			if ( var->flags & ( CVAR_USER_CREATED | CVAR_VM_CREATED ) )
+			{
+				if ( var->flags & CVAR_USER_CREATED )
+					user_vars[ user_count++ ] = var;
+				else
+					vm_vars[ vm_count++ ] = var;
+			}
+			else
+			{
+				allSet &= Info_SetValueForKey( info, var->name, var->string );
+			}
+		}
+	}
+
+	// add vm-created cvars
+	for ( i = 0; i < vm_count; i++ )
+	{
+		var = vm_vars[ i ];
+		allSet &= Info_SetValueForKey( info, var->name, var->string );
+	}
+
+	// add user-created cvars
+	for ( i = 0; i < user_count; i++ )
+	{
+		var = user_vars[ i ];
+		allSet &= Info_SetValueForKey( info, var->name, var->string );
+	}
+
+	if ( truncated )
+	{
+		*truncated = !allSet;
 	}
 
 	return info;
@@ -1670,18 +1714,26 @@ Cvar_InfoString_Big
   handles large info strings ( CS_SYSTEMINFO )
 =====================
 */
-char *Cvar_InfoString_Big(int bit)
+const char *Cvar_InfoString_Big( int bit, qboolean *truncated )
 {
 	static char	info[BIG_INFO_STRING];
-	cvar_t	*var;
+	const cvar_t *var;
+	qboolean allSet;
 
 	info[0] = '\0';
+	allSet = qtrue;
 
-	for (var = cvar_vars; var; var = var->next)
+	for ( var = cvar_vars; var; var = var->next )
 	{
-		if(var->name && (var->flags & bit))
-			Info_SetValueForKey_Big (info, var->name, var->string);
+		if ( var->name && (var->flags & bit) )
+			allSet &= Info_SetValueForKey_s( info, sizeof( info ), var->name, var->string );
 	}
+
+	if ( truncated )
+	{
+		*truncated = !allSet;
+	}
+
 	return info;
 }
 
@@ -1692,7 +1744,7 @@ Cvar_InfoStringBuffer
 =====================
 */
 void Cvar_InfoStringBuffer( int bit, char* buff, int buffsize ) {
-	Q_strncpyz(buff,Cvar_InfoString(bit),buffsize);
+	Q_strncpyz( buff, Cvar_InfoString( bit, NULL ), buffsize );
 }
 
 

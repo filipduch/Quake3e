@@ -999,7 +999,11 @@ void CL_ShutdownAll( void ) {
 
 	// shutdown the renderer
 	if ( re.Shutdown ) {
-		re.Shutdown( 0 ); // don't destroy window or context
+		if ( CL_GameSwitch() ) {
+			CL_ShutdownRef( qfalse ); // shutdown renderer & GLimp
+		} else {
+			re.Shutdown( 0 ); // don't destroy window or context
+		}
 	}
 
 	cls.uiStarted = qfalse;
@@ -1238,6 +1242,18 @@ qboolean CL_Disconnect( qboolean showMainMenu ) {
 		VM_Call( uivm, UI_SET_ACTIVE_MENU, UIMENU_NONE );
 	}
 
+	// Remove pure paks
+	FS_PureServerSetLoadedPaks( "", "" );
+	FS_PureServerSetReferencedPaks( "", "" );
+
+	FS_ClearPakReferences( FS_GENERAL_REF | FS_UI_REF | FS_CGAME_REF );
+
+	if ( CL_GameSwitch() ) {
+		// keep current gamestate and connection
+		cl_disconnecting = qfalse;
+		return qfalse;
+	}
+
 	// send a disconnect message to the server
 	// send it a few times in case one is dropped
 	if ( cls.state >= CA_CONNECTED && cls.state != CA_CINEMATIC && !clc.demoplaying ) {
@@ -1246,12 +1262,6 @@ qboolean CL_Disconnect( qboolean showMainMenu ) {
 		CL_WritePacket();
 		CL_WritePacket();
 	}
-	
-	// Remove pure paks
-	FS_PureServerSetLoadedPaks( "", "" );
-	FS_PureServerSetReferencedPaks( "", "" );
-
-	FS_ClearPakReferences( FS_GENERAL_REF | FS_UI_REF | FS_CGAME_REF );
 
 	CL_ClearState();
 
@@ -1625,7 +1635,7 @@ static void CL_Connect_f( void ) {
 
 	Com_Printf( "%s resolved to %s\n", cls.servername, serverString );
 
-	if( cl_guidServerUniq->integer )
+	if ( cl_guidServerUniq->integer )
 		CL_UpdateGUID( serverString, strlen( serverString ) );
 	else
 		CL_UpdateGUID( NULL, 0 );
@@ -1921,7 +1931,7 @@ static void CL_Clientinfo_f( void ) {
 	Com_Printf( "state: %i\n", cls.state );
 	Com_Printf( "Server: %s\n", cls.servername );
 	Com_Printf ("User info settings:\n");
-	Info_Print( Cvar_InfoString( CVAR_USERINFO ) );
+	Info_Print( Cvar_InfoString( CVAR_USERINFO, NULL ) );
 	Com_Printf( "--------------------------------------\n" );
 }
 
@@ -2264,8 +2274,10 @@ Resend a connect message if the last one has timed out
 */
 static void CL_CheckForResend( void ) {
 	int		port, len;
-	char	info[MAX_INFO_STRING+128]; // larger buffer to detect overflows
+	char	info[MAX_INFO_STRING*2]; // larger buffer to detect overflows
 	char	data[MAX_INFO_STRING];
+	qboolean	notOverflowed;
+	qboolean	infoTruncated;
 
 	// don't send anything if playing back a demo
 	if ( clc.demoplaying ) {
@@ -2299,19 +2311,37 @@ static void CL_CheckForResend( void ) {
 		// sending back the challenge
 		port = Cvar_VariableIntegerValue( "net_qport" );
 
-		Q_strncpyz( info, Cvar_InfoString( CVAR_USERINFO ), sizeof( info ) );
-		
-		if ( clc.compat )
-			Info_SetValueForKey( info, "protocol", va( "%i", PROTOCOL_VERSION ) );
-		else
-			Info_SetValueForKey( info, "protocol", va( "%i", NEW_PROTOCOL_VERSION ) );
+		infoTruncated = qfalse;
+		Q_strncpyz( info, Cvar_InfoString( CVAR_USERINFO, &infoTruncated ), sizeof( info ) );
 
-		Info_SetValueForKey( info, "qport", va( "%i", port ) );
-		Info_SetValueForKey( info, "challenge", va( "%i", clc.challenge ) );
-
+		// remove some non-important keys that may cause overflow during connection
+		if ( strlen( info ) > MAX_USERINFO_LENGTH - 64 ) {
+			infoTruncated |= Info_RemoveKey( info, "xp_name" ) ? qtrue : qfalse;
+			infoTruncated |= Info_RemoveKey( info, "xp_country" ) ? qtrue : qfalse;
+		}
+	
 		len = strlen( info );
 		if ( len > MAX_USERINFO_LENGTH ) {
-			Com_Printf( S_COLOR_YELLOW "WARNING: oversize userinfo (%i), you might be not able to join remote server!\n", len );
+			notOverflowed = qfalse;
+		} else {
+			notOverflowed = qtrue;
+		}
+
+		notOverflowed &= Info_SetValueForKey_s( info, MAX_USERINFO_LENGTH, "protocol",
+			va( "%i", clc.compat ? PROTOCOL_VERSION : NEW_PROTOCOL_VERSION ) );
+		
+		notOverflowed &= Info_SetValueForKey_s( info, MAX_USERINFO_LENGTH, "qport",
+			va( "%i", port ) );
+
+		notOverflowed &= Info_SetValueForKey_s( info, MAX_USERINFO_LENGTH, "challenge",
+			va( "%i", clc.challenge ) );
+
+		// for now - this will be used to inform server about q3msgboom fix
+		// this is optional key so will not trigger oversize warning
+		Info_SetValueForKey_s( info, MAX_USERINFO_LENGTH, "client", Q3_VERSION );
+
+		if ( !notOverflowed ) {
+			Com_Printf( S_COLOR_YELLOW "WARNING: oversize userinfo, you might be not able to join remote server!\n" );
 		}
 
 		len = Com_sprintf( data, sizeof( data ), "connect \"%s\"", info );
@@ -2320,6 +2350,11 @@ static void CL_CheckForResend( void ) {
 		// the most current userinfo has been sent, so watch for any
 		// newer changes to userinfo variables
 		cvar_modifiedFlags &= ~CVAR_USERINFO;
+
+		// ... but force re-send if userinfo was truncated in any way
+		if ( infoTruncated || !notOverflowed ) {
+			cvar_modifiedFlags |= CVAR_USERINFO;
+		}
 		break;
 
 	default:
@@ -2911,14 +2946,14 @@ static void CL_CheckUserinfo( void ) {
 	// send a reliable userinfo update if needed
 	if ( cvar_modifiedFlags & CVAR_USERINFO )
 	{
-		char *info;
-		int len;
+		qboolean infoTruncated = qfalse;
+		const char *info;
 
 		cvar_modifiedFlags &= ~CVAR_USERINFO;
 
-		info = Cvar_InfoString( CVAR_USERINFO );
-		if ( (len = strlen( info )) > MAX_USERINFO_LENGTH ) {
-			Com_Printf( S_COLOR_YELLOW "WARNING: oversize userinfo (%i), you might be not able to play on remote server!\n", len );
+		info = Cvar_InfoString( CVAR_USERINFO, &infoTruncated );
+		if ( strlen( info ) > MAX_USERINFO_LENGTH || infoTruncated ) {
+			Com_Printf( S_COLOR_YELLOW "WARNING: oversize userinfo, you might be not able to play on remote server!\n" );
 		}
 
 		CL_AddReliableCommand( va( "userinfo \"%s\"", info ), qfalse );
@@ -3081,27 +3116,23 @@ void CL_Frame( int msec ) {
 /*
 ================
 CL_RefPrintf
-
-DLL glue
 ================
 */
-static __attribute__ ((format (printf, 2, 3))) void QDECL CL_RefPrintf( int print_level, const char *fmt, ...) {
+static __attribute__ ((format (printf, 2, 3))) void QDECL CL_RefPrintf( printParm_t level, const char *fmt, ... ) {
 	va_list		argptr;
 	char		msg[MAXPRINTMSG];
 	
-	va_start (argptr,fmt);
-	Q_vsnprintf (msg, sizeof(msg), fmt, argptr);
-	va_end (argptr);
+	va_start( argptr, fmt );
+	Q_vsnprintf( msg, sizeof( msg ), fmt, argptr );
+	va_end( argptr );
 
-	if ( print_level == PRINT_ALL ) {
-		Com_Printf ("%s", msg);
-	} else if ( print_level == PRINT_WARNING ) {
-		Com_Printf (S_COLOR_YELLOW "%s", msg);		// yellow
-	} else if ( print_level == PRINT_DEVELOPER ) {
-		Com_DPrintf (S_COLOR_RED "%s", msg);		// red
+	switch ( level ) {
+		default: Com_Printf( "%s", msg ); break;
+		case PRINT_DEVELOPER: Com_DPrintf( "%s", msg ); break;
+		case PRINT_WARNING: Com_Printf( S_COLOR_YELLOW "%s", msg ); break;
+		case PRINT_ERROR: Com_Printf( S_COLOR_RED "%s", msg ); break;
 	}
 }
-
 
 
 /*
@@ -3134,7 +3165,7 @@ static void CL_InitRenderer( void ) {
 	cls.charSetShader = re.RegisterShader( "gfx/2d/bigchars" );
 	cls.whiteShader = re.RegisterShader( "white" );
 	cls.consoleShader = re.RegisterShader( "console" );
-	g_console_field_width = cls.glconfig.vidWidth / SMALLCHAR_WIDTH - 2;
+	g_console_field_width = cls.glconfig.vidWidth / smallchar_width - 2;
 	g_consoleField.widthInChars = g_console_field_width;
 }
 
@@ -3215,6 +3246,23 @@ static qboolean CL_IsMininized( void ) {
 
 /*
 ============
+CL_SetScaling
+============
+*/
+static void CL_SetScaling( float factor, int captureWidth, int captureHeight ) {
+	// set console scaling
+	smallchar_width = SMALLCHAR_WIDTH * factor;
+	smallchar_height = SMALLCHAR_HEIGHT * factor;
+	bigchar_width = BIGCHAR_WIDTH * factor;
+	bigchar_height = BIGCHAR_HEIGHT * factor;
+	// set custom capture resolution
+	cls.captureWidth = captureWidth;
+	cls.captureHeight = captureHeight;
+}
+
+
+/*
+============
 CL_InitRef
 ============
 */
@@ -3261,6 +3309,7 @@ static void CL_InitRef( void ) {
 	ri.Cvar_CheckRange = Cvar_CheckRange;
 	ri.Cvar_SetDescription = Cvar_SetDescription;
 	ri.Cvar_VariableStringBuffer = Cvar_VariableStringBuffer;
+	ri.Cvar_VariableString = Cvar_VariableString;
 	ri.Cvar_VariableIntegerValue = Cvar_VariableIntegerValue;
 
 	ri.Cvar_SetGroup = Cvar_SetGroup;
@@ -3275,6 +3324,7 @@ static void CL_InitRef( void ) {
 
 	ri.CL_WriteAVIVideoFrame = CL_WriteAVIVideoFrame;
 	ri.CL_IsMinimized = CL_IsMininized;
+	ri.CL_SetScaling = CL_SetScaling;
 
 	ri.Sys_SetClipboardBitmap = Sys_SetClipboardBitmap;
 	ri.Sys_LowPhysicalMemory = Sys_LowPhysicalMemory;
@@ -3794,7 +3844,7 @@ void CL_Init( void ) {
 #ifdef USE_MD5
 	CL_GenerateQKey();	
 #endif
-	Cvar_Get( "cl_guid", "", CVAR_USERINFO | CVAR_ROM );
+	Cvar_Get( "cl_guid", "", CVAR_USERINFO | CVAR_ROM | CVAR_PROTECTED );
 	CL_UpdateGUID( NULL, 0 );
 
 	Com_Printf( "----- Client Initialization Complete -----\n" );

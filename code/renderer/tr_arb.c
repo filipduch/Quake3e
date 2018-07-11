@@ -5,7 +5,11 @@
 //#define DEPTH_RENDER_BUFFER
 //#define USE_FBO_BLIT
 
-#define BLOOM_BASE 4
+// screenMap texture dimensions
+#define SCR_WIDTH 128
+#define SCR_HEIGHT 64
+
+#define BLOOM_BASE 5
 #define FBO_COUNT (BLOOM_BASE+(MAX_BLUR_PASSES*2))
 
 #if BLOOM_BASE < 2
@@ -39,6 +43,10 @@ int		blitX0, blitX1;
 int		blitY0, blitY1;
 int		blitClear;
 GLenum	blitFilter;
+
+int		captureWidth;
+int		captureHeight;
+qboolean superSampled;
 
 typedef struct frameBuffer_s {
 	GLuint fbo;
@@ -277,7 +285,7 @@ void ARB_SetupLightParams( void )
 		} else {
 			vertexProgram += 1;
 		}
-		fragmentProgram++;
+		++fragmentProgram;
 	}
 
 	ARB_ProgramEnable( vertexProgram, fragmentProgram );
@@ -1449,7 +1457,7 @@ static qboolean FBO_Create( frameBuffer_t *fb, GLsizei width, GLsizei height, qb
 }
 
 
-static qboolean FBO_CreateMS( frameBuffer_t *fb )
+static qboolean FBO_CreateMS( frameBuffer_t *fb, int width, int height )
 {
 	GLsizei nSamples = r_ext_multisample->integer;
 	int fboStatus;
@@ -1468,7 +1476,7 @@ static qboolean FBO_CreateMS( frameBuffer_t *fb )
 	qglGenRenderbuffers( 1, &fb->color );
 	qglBindRenderbuffer( GL_RENDERBUFFER, fb->color );
 	while ( nSamples > 0 ) {
-		qglRenderbufferStorageMultisample( GL_RENDERBUFFER, nSamples, fboInternalFormat, glConfig.vidWidth, glConfig.vidHeight );
+		qglRenderbufferStorageMultisample( GL_RENDERBUFFER, nSamples, fboInternalFormat, width, height );
 		if ( (int)qglGetError() == GL_INVALID_VALUE/* != GL_NO_ERROR */ ) {
 			ri.Printf( PRINT_ALL, "...%ix MSAA is not available\n", nSamples );
 			nSamples -= 2;
@@ -1488,9 +1496,9 @@ static qboolean FBO_CreateMS( frameBuffer_t *fb )
 	qglGenRenderbuffers( 1, &fb->depthStencil );
 	qglBindRenderbuffer( GL_RENDERBUFFER, fb->depthStencil );
 	if ( r_stencilbits->integer == 0 )
-		qglRenderbufferStorageMultisample( GL_RENDERBUFFER, nSamples, GL_DEPTH_COMPONENT32, glConfig.vidWidth, glConfig.vidHeight );
+		qglRenderbufferStorageMultisample( GL_RENDERBUFFER, nSamples, GL_DEPTH_COMPONENT32, width, height );
 	else
-		qglRenderbufferStorageMultisample( GL_RENDERBUFFER, nSamples, GL_DEPTH24_STENCIL8, glConfig.vidWidth, glConfig.vidHeight );
+		qglRenderbufferStorageMultisample( GL_RENDERBUFFER, nSamples, GL_DEPTH24_STENCIL8, width, height );
 
 	if ( (int)qglGetError() != GL_NO_ERROR )
 	{
@@ -1510,6 +1518,9 @@ static qboolean FBO_CreateMS( frameBuffer_t *fb )
 		FBO_Clean( fb );
 		return qfalse;
 	}
+
+	fb->width = width;
+	fb->height = height;
 
 	qglClearColor( 0.0, 0.0, 0.0, 1.0 );
 	qglClear( GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT );
@@ -1635,6 +1646,19 @@ static void FBO_BlitToBackBuffer( int index )
 }
 
 
+void FBO_BlitSS( void )
+{
+	const frameBuffer_t *src = &frameBuffers[ fboReadIndex ];
+	const frameBuffer_t *dst = &frameBuffers[ 4 ];
+
+	FBO_Bind( GL_DRAW_FRAMEBUFFER, dst->fbo );
+	
+	qglBlitFramebuffer( 0, 0, src->width, src->height, 0, 0, dst->width, dst->height, GL_COLOR_BUFFER_BIT, GL_LINEAR );
+
+	FBO_Bind( GL_READ_FRAMEBUFFER, dst->fbo );
+}
+
+
 void FBO_BlitMS( qboolean depthOnly )
 {
 	//if ( blitMSfbo )
@@ -1711,9 +1735,13 @@ void FBO_CopyScreen( void )
 {
 	const frameBuffer_t *dst;
 	const frameBuffer_t *src;
+	int yCrop;
+
+	qglViewport( 0, 0, glConfig.vidWidth, glConfig.vidHeight );
+	qglScissor( 0, 0, glConfig.vidWidth, glConfig.vidHeight );
 
 	// resolve multisample buffer first
-	if ( frameBufferMultiSampling && blitMSfbo ) 
+	if ( blitMSfbo )
 	{
 		src = &frameBufferMS;
 		dst = &frameBuffers[ 0 ];
@@ -1726,12 +1754,16 @@ void FBO_CopyScreen( void )
 	dst = &frameBuffers[ 2 ];
 	FBO_Bind( GL_READ_FRAMEBUFFER, src->fbo );
 	FBO_Bind( GL_DRAW_FRAMEBUFFER, dst->fbo );
-	qglBlitFramebuffer( 0, 0, src->width, src->height, 0, 0, dst->width, dst->height, GL_COLOR_BUFFER_BIT, GL_LINEAR );
+
+	yCrop = backEnd.viewParms.viewportHeight / 4;
+
+	qglBlitFramebuffer( backEnd.viewParms.viewportX, backEnd.viewParms.viewportY + yCrop,
+		backEnd.viewParms.viewportWidth + backEnd.viewParms.viewportX,
+		backEnd.viewParms.viewportHeight + backEnd.viewParms.viewportY,
+		0, 0, dst->width, dst->height, GL_COLOR_BUFFER_BIT, GL_LINEAR );
 
 	//if ( !backEnd.projection2D )
 	{
-		qglViewport( 0, 0, glConfig.vidWidth, glConfig.vidHeight );
-		qglScissor( 0, 0, glConfig.vidWidth, glConfig.vidHeight );
 		qglMatrixMode( GL_PROJECTION );
 		qglLoadIdentity();
 		qglOrtho( 0, glConfig.vidWidth, glConfig.vidHeight, 0, 0, 1 );
@@ -1745,6 +1777,7 @@ void FBO_CopyScreen( void )
 	GL_State( GLS_DEPTHTEST_DISABLE | GLS_SRCBLEND_ONE | GLS_DSTBLEND_ZERO );
 	FBO_Blur2( dst, dst+1, dst );
 	ARB_ProgramDisable();
+
 	//restore viewport and scissor
 	qglViewport( backEnd.viewParms.viewportX, backEnd.viewParms.viewportY,
 		backEnd.viewParms.viewportWidth, backEnd.viewParms.viewportHeight ); 
@@ -1838,7 +1871,7 @@ qboolean FBO_Bloom( const float gamma, const float obScale, qboolean finalStage 
 		}
 	}
 
-	if ( frameBufferMultiSampling && blitMSfbo )
+	if ( blitMSfbo )
 	{
 		FBO_BlitMS( qfalse );
 		blitMSfbo = qfalse;
@@ -2000,9 +2033,6 @@ void FBO_PostProcess( void )
 	const float h = glConfig.vidHeight;
 	qboolean minimized;
 
-	if ( !fboEnabled )
-		return;
-
 	ARB_ProgramDisable();
 
 	if ( !backEnd.projection2D )
@@ -2017,9 +2047,11 @@ void FBO_PostProcess( void )
 		backEnd.projection2D = qtrue;
 	}
 
-	if ( frameBufferMultiSampling && blitMSfbo )
+	if ( blitMSfbo )
+	{
 		FBO_BlitMS( qfalse );
-	blitMSfbo = qfalse;
+		blitMSfbo = qfalse;
+	}
 
 	qglColor4f( 1.0f, 1.0f, 1.0f, 1.0f );
 	GL_State( GLS_DEPTHTEST_DISABLE | GLS_SRCBLEND_ONE | GLS_DSTBLEND_ZERO );
@@ -2078,11 +2110,10 @@ static void QGL_InitPrograms( void )
 
 static void QGL_EarlyInitFBO( void )
 {
+	int scaleMode;
 	fboAvailable = qfalse;
 
-	if ( !programAvailable || !qglGenFramebuffers || !qglBlitFramebuffer )
-		return;
-
+	windowAdjusted = qfalse;
 	windowWidth = glConfig.vidWidth;
 	windowHeight = glConfig.vidHeight;
 
@@ -2090,38 +2121,69 @@ static void QGL_EarlyInitFBO( void )
 	blitX1 = windowWidth;
 	blitY1 = windowHeight;
 
-	if ( r_renderWidth->integer >= 64 && r_renderHeight->integer >= 64 && r_fbo->integer )
+	superSampled = qfalse;
+
+	if ( !programAvailable || !qglGenFramebuffers || !qglBlitFramebuffer )
+		return;
+
+	if ( !r_fbo->integer )
+	{
+		if ( r_renderScale->integer )
+		{
+			Com_Printf( "...ignoring r_renderScale due to disabled FBO\n" );
+		}
+		return;
+	}
+
+	if ( r_renderScale->integer )
 	{
 		glConfig.vidWidth = r_renderWidth->integer;
 		glConfig.vidHeight = r_renderHeight->integer;
 	}
 
+	captureWidth = glConfig.vidWidth;
+	captureHeight = glConfig.vidHeight;
+
+	if ( r_ext_supersample->integer )
+	{
+		glConfig.vidWidth *= 2;
+		glConfig.vidHeight *= 2;
+		superSampled = qtrue;
+		ri.CL_SetScaling( 2.0, captureWidth, captureHeight );
+		blitFilter = GL_LINEAR; // default value for (r_renderScale==0) case
+	}
+
 	if ( windowWidth != glConfig.vidWidth || windowHeight != glConfig.vidHeight )
 	{
-		if ( r_renderScale->integer & 1 )
+		if ( r_renderScale->integer > 0 )
 		{
-			float windowAspect = (float) windowWidth / (float) windowHeight;
-			float renderAspect = (float) glConfig.vidWidth / (float) glConfig.vidHeight;
-			if ( windowAspect >= renderAspect ) 
+			scaleMode = r_renderScale->integer - 1;
+			if ( scaleMode & 1 )
 			{
-				float scale = (float) windowHeight / ( float ) glConfig.vidHeight;
-				int bias = ( windowWidth - scale * (float) glConfig.vidWidth ) / 2;
-				blitX0 += bias;
-				blitX1 -= bias;
+				// preserve aspect ratio (black bars on sides)
+				float windowAspect = (float) windowWidth / (float) windowHeight;
+				float renderAspect = (float) glConfig.vidWidth / (float) glConfig.vidHeight;
+				if ( windowAspect >= renderAspect ) 
+				{
+					float scale = (float) windowHeight / ( float ) glConfig.vidHeight;
+					int bias = ( windowWidth - scale * (float) glConfig.vidWidth ) / 2;
+					blitX0 += bias;
+					blitX1 -= bias;
+				}
+				else
+				{
+					float scale = (float) windowWidth / ( float ) glConfig.vidWidth;
+					int bias = ( windowHeight - scale * (float) glConfig.vidHeight ) / 2;
+					blitY0 += bias;
+					blitY1 -= bias;
+				}
 			}
+			// linear filtering
+			if ( scaleMode & 2 )
+				blitFilter = GL_LINEAR;
 			else
-			{
-				float scale = (float) windowWidth / ( float ) glConfig.vidWidth;
-				int bias = ( windowHeight - scale * (float) glConfig.vidHeight ) / 2;
-				blitY0 += bias;
-				blitY1 -= bias;
-			}
+				blitFilter = GL_NEAREST;
 		}
-
-		if ( r_renderScale->integer & 2 )
-			blitFilter = GL_LINEAR;
-		else
-			blitFilter = GL_NEAREST;
 
 		windowAdjusted = qtrue;
 	}
@@ -2146,6 +2208,7 @@ void QGL_DoneFBO( void )
 		FBO_Clean(&frameBuffers[1]);
 		FBO_Clean(&frameBuffers[2]);
 		FBO_Clean(&frameBuffers[3]);
+		FBO_Clean(&frameBuffers[4]);
 		FBO_CleanBloom();
 		FBO_CleanDepth();
 		fboEnabled = qfalse;
@@ -2153,7 +2216,6 @@ void QGL_DoneFBO( void )
 	}
 }
 
-#define SCR_SZ 128
 
 void QGL_InitFBO( void )
 {
@@ -2189,7 +2251,7 @@ void QGL_InitFBO( void )
 		default: fboInternalFormat = GL_RGBA16; break;
 	}
 
-	if ( FBO_CreateMS( &frameBufferMS ) )
+	if ( FBO_CreateMS( &frameBufferMS, w, h ) )
 	{
 		frameBufferMultiSampling = qtrue;
 		if ( r_flares->integer )
@@ -2198,16 +2260,21 @@ void QGL_InitFBO( void )
 			depthStencil = qfalse;
 		result = FBO_Create( &frameBuffers[ 0 ], w, h, depthStencil, &fboTextureFormat, &fboTextureType )
 			&& FBO_Create( &frameBuffers[ 1 ], w, h, depthStencil, NULL, NULL )
-			&& FBO_Create( &frameBuffers[ 2 ], SCR_SZ, SCR_SZ, qfalse, NULL, NULL )
-			&& FBO_Create( &frameBuffers[ 3 ], SCR_SZ, SCR_SZ, qfalse, NULL, NULL );
+			&& FBO_Create( &frameBuffers[ 2 ], SCR_WIDTH, SCR_HEIGHT, qfalse, NULL, NULL )
+			&& FBO_Create( &frameBuffers[ 3 ], SCR_WIDTH, SCR_HEIGHT, qfalse, NULL, NULL );
 		frameBufferMultiSampling = result;
 	}
 	else
 	{
 		result = FBO_Create( &frameBuffers[ 0 ], w, h, qtrue, &fboTextureFormat, &fboTextureType )
 			&& FBO_Create( &frameBuffers[ 1 ], w, h, qtrue, NULL, NULL )
-			&& FBO_Create( &frameBuffers[ 2 ], SCR_SZ, SCR_SZ, qfalse, NULL, NULL )
-			&& FBO_Create( &frameBuffers[ 3 ], SCR_SZ, SCR_SZ, qfalse, NULL, NULL );
+			&& FBO_Create( &frameBuffers[ 2 ], SCR_WIDTH, SCR_HEIGHT, qfalse, NULL, NULL )
+			&& FBO_Create( &frameBuffers[ 3 ], SCR_WIDTH, SCR_HEIGHT, qfalse, NULL, NULL );
+	}
+
+	if ( result && superSampled )
+	{
+		result &= FBO_Create( &frameBuffers[ 4 ], captureWidth, captureHeight, qfalse, NULL, NULL );
 	}
 
 	if ( result )

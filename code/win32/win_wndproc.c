@@ -308,7 +308,9 @@ static qboolean directMap( const WPARAM chr ) {
 		case 'h'-'a'+1:
 		case 'a'-'a'+1:
 		case 'e'-'a'+1:
-		case 0xC: // CTRL+L
+		case 'n'-'a'+1:
+		case 'p'-'a'+1:
+		case 'l'-'a'+1: // CTRL+L
 			return qtrue;
 	}
 
@@ -805,6 +807,7 @@ LRESULT WINAPI MainWndProc( HWND hWnd, UINT uMsg, WPARAM  wParam, LPARAM lParam 
 		break;
 
 	case WM_CONTEXTMENU:
+		// disable context menus to avoid blocking message loop
 		return 0;
 
 	case WM_HOTKEY:
@@ -882,6 +885,7 @@ LRESULT WINAPI MainWndProc( HWND hWnd, UINT uMsg, WPARAM  wParam, LPARAM lParam 
 		break;
 #endif
 	case WM_NCHITTEST:
+		// in borderless mode - drag using client area when holding CTRL
 		if ( g_wv.borderless && GetKeyState( VK_CONTROL ) & (1<<15) )
 			return HTCAPTION;
 		break;

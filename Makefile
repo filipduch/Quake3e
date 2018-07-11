@@ -21,7 +21,7 @@ endif
 BUILD_CLIENT     = 0
 BUILD_SERVER     = 1
 
-USE_CURL         = 1
+USE_CURL         = 0
 USE_LOCAL_HEADERS= 0
 
 CNAME            = quake3e
@@ -882,6 +882,7 @@ Q3DOBJ = \
   $(B)/ded/common.o \
   $(B)/ded/cvar.o \
   $(B)/ded/files.o \
+  $(B)/ded/history.o \
   $(B)/ded/keys.o \
   $(B)/ded/md4.o \
   $(B)/ded/md5.o \
@@ -929,7 +930,6 @@ Q3DOBJ = \
 
 ifdef MINGW
   Q3DOBJ += \
-  $(B)/ded/history.o \
   $(B)/ded/win_main.o \
   $(B)/client/win_resource.o \
   $(B)/ded/win_shared.o \

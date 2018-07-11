@@ -27,7 +27,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 trGlobals_t		tr;
 
-static float	s_flipMatrix[16] = {
+static const float s_flipMatrix[16] = {
 	// convert from our coordinate system (looking down X)
 	// to OpenGL's coordinate system (looking down -Z)
 	0, 0, -1, 0,
@@ -445,7 +445,7 @@ static void R_RotateForViewer( void )
 */
 static void R_SetFarClip( void )
 {
-	float	farthestCornerDistance = 0;
+	float	farthestCornerDistance;
 	int		i;
 
 	// if not rendering the world (icons, menus, etc)
@@ -1385,7 +1385,7 @@ R_DecomposeLitSort
 */
 void R_DecomposeLitSort( unsigned sort, int *entityNum, shader_t **shader, int *fogNum ) {
 	*fogNum = ( sort >> QSORT_FOGNUM_SHIFT ) & FOGNUM_MASK;
-	*shader = tr.sortedShaders[ ( sort >> QSORT_SHADERNUM_SHIFT ) & (MAX_SHADERS-1) ];
+	*shader = tr.sortedShaders[ ( sort >> QSORT_SHADERNUM_SHIFT ) & SHADERNUM_MASK ];
 	*entityNum = ( sort >> QSORT_REFENTITYNUM_SHIFT ) & REFENTITYNUM_MASK;
 }
 
@@ -1423,7 +1423,7 @@ R_DecomposeSort
 void R_DecomposeSort( unsigned sort, int *entityNum, shader_t **shader, 
 					 int *fogNum, int *dlightMap ) {
 	*fogNum = ( sort >> QSORT_FOGNUM_SHIFT ) & FOGNUM_MASK;
-	*shader = tr.sortedShaders[ ( sort >> QSORT_SHADERNUM_SHIFT ) & (MAX_SHADERS-1) ];
+	*shader = tr.sortedShaders[ ( sort >> QSORT_SHADERNUM_SHIFT ) & SHADERNUM_MASK ];
 	*entityNum = ( sort >> QSORT_REFENTITYNUM_SHIFT ) & REFENTITYNUM_MASK;
 	*dlightMap = sort & DLIGHT_MASK;
 }
