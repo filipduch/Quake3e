@@ -688,6 +688,8 @@ static qboolean ParseStage( shaderStage_t *stage, const char **text )
 		//
 		else if ( !Q_stricmp( token, "animMap" ) )
 		{
+			int	totalImages = 0;
+
 			token = COM_ParseExt( text, qfalse );
 			if ( !token[0] )
 			{
@@ -725,6 +727,12 @@ static qboolean ParseStage( shaderStage_t *stage, const char **text )
 					}
 					stage->bundle[0].numImageAnimations++;
 				}
+				totalImages++;
+			}
+
+			if ( totalImages > MAX_IMAGE_ANIMATIONS ) {
+				ri.Printf( PRINT_WARNING, "WARNING: ignoring excess images for 'animMap' (found %d, max is %d) in shader '%s'\n",
+						totalImages, MAX_IMAGE_ANIMATIONS, shader.name );
 			}
 		}
 		else if ( !Q_stricmp( token, "videoMap" ) )
@@ -2960,7 +2968,7 @@ qhandle_t RE_RegisterShaderFromImage(const char *name, int lightmapIndex, image_
 
 	InitShader( name, lightmapIndex );
 
-	// FIXME: set these "need" values apropriately
+	// FIXME: set these "need" values appropriately
 	shader.needsNormal = qtrue;
 	shader.needsST1 = qtrue;
 	shader.needsST2 = qtrue;
@@ -3216,9 +3224,9 @@ void	R_ShaderList_f (void) {
 }
 
 
-#define	MAX_SHADER_FILES	4096
+#define	MAX_SHADER_FILES 16384
 
-static int loadShaderBuffers( char **shaderFiles, const int numShaderFiles, char *buffers[ MAX_SHADER_FILES ] )
+static int loadShaderBuffers( char **shaderFiles, const int numShaderFiles, char **buffers )
 {
 	char filename[MAX_QPATH+8];
 	char shaderName[MAX_QPATH];
@@ -3240,7 +3248,7 @@ static int loadShaderBuffers( char **shaderFiles, const int numShaderFiles, char
 			ri.Error( ERR_DROP, "Couldn't load %s", filename );
 		
 		// comment some buggy shaders from pak0
-		if ( summand == 35910 && strcmp( shaderFiles[i], "sky.shader" ) == 0)
+		if ( summand == 35910 && strcmp( shaderFiles[i], "sky.shader" ) == 0 )
 		{
 			if ( memcmp( buffers[i] + 0x3D3E, "\tcloudparms ", 12 ) == 0 )
 			{
@@ -3249,6 +3257,14 @@ static int loadShaderBuffers( char **shaderFiles, const int numShaderFiles, char
 
 				memcpy( buffers[i] + 0x3CA9, "/*", 2 );
 				memcpy( buffers[i] + 0x3FC2, "*/", 2 );
+			}
+		}
+		else if ( summand == 116073 && strcmp( shaderFiles[i], "sfx.shader" ) == 0 )
+		{
+			if ( memcmp( buffers[i] + 4367, "textures/sfx/xfinalfog\n\r", 24 ) == 0 )
+			{
+				memcpy( buffers[i] + 4367, "/*", 2 );
+				memcpy( buffers[i] + 4376, "*/", 2 );
 			}
 		}
 

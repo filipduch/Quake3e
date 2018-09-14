@@ -26,6 +26,8 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #include "win_local.h"
 #include "glw_win.h"
 #include "resource.h"
+#include <sys/types.h>
+#include <sys/stat.h>
 #include <errno.h>
 #include <float.h>
 #include <fcntl.h>
@@ -253,35 +255,13 @@ void Sys_ListFilteredFiles( const char *basedir, const char *subdirs, const char
 			break;
 		}
 		Com_sprintf( filename, sizeof(filename), "%s\\%s", subdirs, findinfo.name );
-		if (!Com_FilterPath( filter, filename, qfalse ))
+		if ( !Com_FilterPath( filter, filename ) )
 			continue;
 		list[ *numfiles ] = FS_CopyString( filename );
 		(*numfiles)++;
 	} while ( _findnext (findhandle, &findinfo) != -1 );
 
 	_findclose (findhandle);
-}
-
-
-static qboolean strgtr(const char *s0, const char *s1) {
-	int l0, l1, i;
-
-	l0 = strlen(s0);
-	l1 = strlen(s1);
-
-	if (l1<l0) {
-		l0 = l1;
-	}
-
-	for(i=0;i<l0;i++) {
-		if (s1[i] > s0[i]) {
-			return qtrue;
-		}
-		if (s1[i] < s0[i]) {
-			return qfalse;
-		}
-	}
-	return qfalse;
 }
 
 
@@ -324,20 +304,24 @@ char **Sys_ListFiles( const char *directory, const char *extension, const char *
 	struct _finddata_t findinfo;
 	intptr_t	findhandle;
 	int			flag;
+	int			extLen;
+	int			length;
 	int			i;
+	const char	*x;
+	qboolean	hasPatterns;
 
-	if (filter) {
+	if ( filter ) {
 
 		nfiles = 0;
 		Sys_ListFilteredFiles( directory, "", filter, list, &nfiles );
 
-		list[ nfiles ] = 0;
+		list[ nfiles ] = NULL;
 		*numfiles = nfiles;
 
 		if (!nfiles)
 			return NULL;
 
-		listCopy = Z_Malloc( ( nfiles + 1 ) * sizeof( *listCopy ) );
+		listCopy = Z_Malloc( ( nfiles + 1 ) * sizeof( listCopy[0] ) );
 		for ( i = 0 ; i < nfiles ; i++ ) {
 			listCopy[i] = list[i];
 		}
@@ -360,26 +344,45 @@ char **Sys_ListFiles( const char *directory, const char *extension, const char *
 
 	Com_sprintf( search, sizeof(search), "%s\\*%s", directory, extension );
 
-	// search
-	nfiles = 0;
-
-	findhandle = _findfirst (search, &findinfo);
-	if (findhandle == -1) {
+	findhandle = _findfirst( search, &findinfo );
+	if ( findhandle == -1 ) {
 		*numfiles = 0;
 		return NULL;
 	}
+
+	extLen = (int)strlen( extension );
+	hasPatterns = Com_HasPatterns( extension );
+	if ( hasPatterns && extension[0] == '.' && extension[1] != '\0' ) {
+		extension++;
+	}
+
+	// search
+	nfiles = 0;
 
 	do {
 		if ( (!wantsubs && flag ^ ( findinfo.attrib & _A_SUBDIR )) || (wantsubs && findinfo.attrib & _A_SUBDIR) ) {
 			if ( nfiles == MAX_FOUND_FILES - 1 ) {
 				break;
 			}
+			if ( *extension ) {
+				if ( hasPatterns ) {
+					x = strrchr( findinfo.name, '.' );
+					if ( !x || !Com_FilterExt( extension, x+1 ) ) {
+						continue;
+					}
+				} else {
+					length = strlen( findinfo.name );
+					if ( length < extLen || Q_stricmp( findinfo.name + length - extLen, extension ) ) {
+						continue;
+					}
+				}
+			}
 			list[ nfiles ] = FS_CopyString( findinfo.name );
 			nfiles++;
 		}
 	} while ( _findnext (findhandle, &findinfo) != -1 );
 
-	list[ nfiles ] = 0;
+	list[ nfiles ] = NULL;
 
 	_findclose (findhandle);
 
@@ -390,23 +393,13 @@ char **Sys_ListFiles( const char *directory, const char *extension, const char *
 		return NULL;
 	}
 
-	listCopy = Z_Malloc( ( nfiles + 1 ) * sizeof( *listCopy ) );
+	listCopy = Z_Malloc( ( nfiles + 1 ) * sizeof( listCopy[0] ) );
 	for ( i = 0 ; i < nfiles ; i++ ) {
 		listCopy[i] = list[i];
 	}
 	listCopy[i] = NULL;
 
-	do {
-		flag = 0;
-		for(i=1; i<nfiles; i++) {
-			if (strgtr(listCopy[i-1], listCopy[i])) {
-				char *temp = listCopy[i];
-				listCopy[i] = listCopy[i-1];
-				listCopy[i-1] = temp;
-				flag = 1;
-			}
-		}
-	} while(flag);
+	Com_SortFileList( listCopy, nfiles, extension[0] != '\0' );
 
 	return listCopy;
 }
@@ -430,6 +423,26 @@ void Sys_FreeFileList( char **list ) {
 
 	Z_Free( list );
 }
+
+
+/*
+=============
+Sys_GetFileStats
+=============
+*/
+qboolean Sys_GetFileStats( const char *filename, fileOffset_t *size, fileTime_t *mtime, fileTime_t *ctime ) {
+	struct _stat s;
+
+	if ( _stat( filename, &s ) == 0 ) {
+		*size = (fileOffset_t)s.st_size;
+		*mtime = (fileTime_t)s.st_mtime;
+		*ctime = (fileTime_t)s.st_ctime;
+		return qtrue;
+	} else {
+		return qfalse;
+	}
+}
+
 
 //========================================================
 

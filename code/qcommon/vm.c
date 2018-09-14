@@ -378,7 +378,6 @@ const char *VM_SymbolForCompiledPointer( vm_t *vm, void *code ) {
 #endif
 
 
-
 /*
 ===============
 ParseHex
@@ -555,10 +554,23 @@ intptr_t QDECL VM_DllSyscall( intptr_t arg, ... ) {
 #endif
 
 
+static void VM_SwapLongs( void *data, int length )
+{
+#ifndef Q3_LITTLE_ENDIAN
+	int i, *ptr;
+	ptr = (int *) data;
+	length /= sizeof( int );
+	for ( i = 0; i < length; i++ ) {
+		ptr[ i ] = LittleLong( ptr[ i ] );
+	}
+#endif
+}
+
+
 static int Load_JTS( vm_t *vm, unsigned int crc32, void *data, int vmPakIndex )  {
 	char		filename[MAX_QPATH];
 	int			header[2];
-	int			length, i;
+	int			length;
 	fileHandle_t fh;
 
 	// load the image
@@ -595,9 +607,7 @@ static int Load_JTS( vm_t *vm, unsigned int crc32, void *data, int vmPakIndex ) 
 	}
 
 	// byte swap the header
-	for ( i = 0 ; i < sizeof( header  ) / sizeof( int ) ; i++ ) {
-		((int *)header)[i] = LittleLong( ((int *)header)[i] );
-	}
+	VM_SwapLongs( header, sizeof( header  ) );
 
 	if ( (unsigned int)header[0] != crc32 ) {
 		if ( data )
@@ -625,9 +635,7 @@ static int Load_JTS( vm_t *vm, unsigned int crc32, void *data, int vmPakIndex ) 
 	FS_FCloseFile( fh );
 
 	// byte swap the data
-	for ( i = 0 ; i < length / sizeof( int ); i++ ) {
-		((int *)data)[i] = LittleLong( ((int *)data)[i] );
-	}
+	VM_SwapLongs( data, length );
 
 	return length;
 }
@@ -641,7 +649,7 @@ VM_ValidateHeader
 static char *VM_ValidateHeader( vmHeader_t *header, int fileSize ) 
 {
 	static char errMsg[128];
-	int i, n;
+	int n;
 
 	// truncated
 	if ( fileSize < ( sizeof( vmHeader_t ) - sizeof( int ) ) ) {
@@ -662,14 +670,12 @@ static char *VM_ValidateHeader( vmHeader_t *header, int fileSize )
 	}
 
 	if ( LittleLong( header->vmMagic ) == VM_MAGIC_VER2 )
-		n = sizeof( vmHeader_t ) / sizeof( int );
+		n = sizeof( vmHeader_t );
 	else
-		n = ( sizeof( vmHeader_t ) - sizeof( int ) ) / sizeof( int );
+		n = ( sizeof( vmHeader_t ) - sizeof( int ) );
 
 	// byte swap the header
-	for ( i = 0 ; i < n ; i++ ) {
-		((int *)header)[i] = LittleLong( ((int *)header)[i] );
-	}
+	VM_SwapLongs( header, n );
 
 	// bad code offset
 	if ( header->codeOffset >= fileSize ) {
@@ -816,9 +822,7 @@ static vmHeader_t *VM_LoadQVM( vm_t *vm, qboolean alloc ) {
 	Com_Memcpy( vm->dataBase, (byte *)header + header->dataOffset, header->dataLength + header->litLength );
 
 	// byte swap the longs
-	for ( i = 0 ; i < header->dataLength ; i += 4 ) {
-		*(int *)(vm->dataBase + i) = LittleLong( *(int *)(vm->dataBase + i ) );
-	}
+	VM_SwapLongs( vm->dataBase, header->dataLength );
 
 	if( header->vmMagic == VM_MAGIC_VER2 ) {
 		int previousNumJumpTableTargets = vm->numJumpTableTargets;
@@ -847,9 +851,7 @@ static vmHeader_t *VM_LoadQVM( vm_t *vm, qboolean alloc ) {
 				header->dataLength + header->litLength, header->jtrgLength );
 
 		// byte swap the longs
-		for ( i = 0 ; i < header->jtrgLength ; i += 4 ) {
-			*(int *)(vm->jumpTableTargets + i) = LittleLong( *(int *)(vm->jumpTableTargets + i ) );
-		}
+		VM_SwapLongs( vm->jumpTableTargets, header->jtrgLength );
 	}
 
 	if ( tryjts == qtrue && (length = Load_JTS( vm, crc32sum, NULL, vmPakIndex )) >= 0 ) {
@@ -880,23 +882,22 @@ VM_LoadInstructions
 loads instructions in structured format
 =================
 */
-const char *VM_LoadInstructions( const vmHeader_t *header, instruction_t *buf ) 
+const char *VM_LoadInstructions( const byte *code_pos, int codeLength, int instructionCount, instruction_t *buf )
 {
 	static char errBuf[ 128 ];
-	byte *code_pos, *code_start, *code_end;
+	const byte *code_start, *code_end;
 	int i, n, op0, op1, opStack;
 	instruction_t *ci;
 	
-	code_pos = (byte *) header + header->codeOffset;
 	code_start = code_pos; // for printing
-	code_end =  (byte *) header + header->codeOffset + header->codeLength;
+	code_end = code_pos + codeLength;
 
 	ci = buf;
 	opStack = 0;
 	op1 = OP_UNDEF;
 
 	// load instructions and perform some initial calculations/checks
-	for ( i = 0; i < header->instructionCount; i++, ci++, op1 = op0 ) {
+	for ( i = 0; i < instructionCount; i++, ci++, op1 = op0 ) {
 		op0 = *code_pos;
 		if ( op0 < 0 || op0 >= OP_MAX ) {
 			sprintf( errBuf, "bad opcode %02X at offset %d", op0, (int)(code_pos - code_start) );
@@ -939,11 +940,11 @@ VM_CheckInstructions
 performs additional consistency and security checks
 ===============================
 */
-const char *VM_CheckInstructions( instruction_t *buf, 
-								 int instructionCount, 
-								 const byte *jumpTableTargets, 
-								 int numJumpTableTargets, 
-								 int dataLength ) 
+const char *VM_CheckInstructions( instruction_t *buf,
+								int instructionCount,
+								const byte *jumpTableTargets,
+								int numJumpTableTargets,
+								int dataLength )
 {
 	static char errBuf[ 128 ];
 	int i, n, v, op0, op1, opStack, pstack;
@@ -1316,6 +1317,34 @@ void VM_ReplaceInstructions( vm_t *vm, instruction_t *buf ) {
 			vm->forceDataMask = qtrue; // OSP server doing some bad things with memory
 		} else {
 			vm->forceDataMask = qfalse;
+		}
+	}
+
+	if ( vm->index == VM_UI ) {
+		// fix OSP demo UI
+		if ( vm->crc32sum == 0xCA84F31D && vm->instructionCount == 78585 && vm->exactDataLength == 542180 ) {
+			if ( memcmp( vm->dataBase + 0x3D2E, "dm_67", 5 ) == 0 ) {
+				memcpy( vm->dataBase + 0x3D2E, "dm_??", 5 );
+			}
+			if ( memcmp( vm->dataBase + 0x3D50, "\"%s.%s\"\n", 8 ) == 0 ) {
+				memcpy( vm->dataBase + 0x3D50, "\"%s\"\n", 6 );
+			}
+		}
+		// fix defrag-1.91.25 demo UI - masked Q_strupr() calls for directories and filenames
+		if ( vm->crc32sum == 0x6E51985F && vm->instructionCount == 125942 && vm->exactDataLength == 1334788 ) {
+			ip = buf + 60150;
+			if ( ip[0].op == OP_LOCAL && ip[0].value == 28 && ip[1].op == OP_LOAD4 && ip[2].op == OP_ARG && ip[3].value == 124325 ) {
+				int i;
+				for ( i = 0; i < 6; i++ ) {
+					ip[i].op = OP_IGNORE;
+					ip[i].jused = 0;
+				}
+				ip = buf + 60438;
+				for ( i = 0; i < 6; i++ ) {
+					ip[i].op = OP_IGNORE;
+					ip[i].jused = 0;
+				}
+			}
 		}
 	}
 }

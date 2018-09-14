@@ -218,7 +218,7 @@ void Sys_ListFilteredFiles( const char *basedir, const char *subdirs, const char
 			break;
 		}
 		Com_sprintf( filename, sizeof(filename), "%s/%s", subdirs, d->d_name );
-		if (!Com_FilterPath( filter, filename, qfalse ))
+		if ( !Com_FilterPath( filter, filename ) )
 			continue;
 		list[ *numfiles ] = FS_CopyString( filename );
 		(*numfiles)++;
@@ -237,10 +237,14 @@ char **Sys_ListFiles( const char *directory, const char *extension, const char *
 	qboolean dironly = wantsubs;
 	char		search[MAX_OSPATH*2+MAX_QPATH+1];
 	int			nfiles;
+	int			extLen;
+	int			length;
 	char		**listCopy;
 	char		*list[MAX_FOUND_FILES];
 	int			i;
 	struct stat st;
+	qboolean	hasPatterns;
+	const char	*x;
 
 	if ( filter ) {
 
@@ -253,7 +257,7 @@ char **Sys_ListFiles( const char *directory, const char *extension, const char *
 		if ( !nfiles )
 			return NULL;
 
-		listCopy = Z_Malloc( ( nfiles + 1 ) * sizeof( *listCopy ) );
+		listCopy = Z_Malloc( ( nfiles + 1 ) * sizeof( listCopy[0] ) );
 		for ( i = 0 ; i < nfiles ; i++ ) {
 			listCopy[i] = list[i];
 		}
@@ -269,41 +273,50 @@ char **Sys_ListFiles( const char *directory, const char *extension, const char *
 		extension = "";
 		dironly = qtrue;
 	}
-	
-	// search
-	nfiles = 0;
 
 	if ((fdir = opendir(directory)) == NULL) {
 		*numfiles = 0;
 		return NULL;
 	}
 
+	extLen = (int)strlen( extension );
+	hasPatterns = Com_HasPatterns( extension );
+	if ( hasPatterns && extension[0] == '.' && extension[1] != '\0' ) {
+		extension++;
+	}
+	
+	// search
+	nfiles = 0;
+
 	while ((d = readdir(fdir)) != NULL) {
+		if ( nfiles == MAX_FOUND_FILES - 1 )
+			break;
 		Com_sprintf(search, sizeof(search), "%s/%s", directory, d->d_name);
 		if (stat(search, &st) == -1)
 			continue;
 		if ((dironly && !(st.st_mode & S_IFDIR)) ||
 			(!dironly && (st.st_mode & S_IFDIR)))
 			continue;
-
-		if (*extension) {
-			if ( strlen( d->d_name ) < strlen( extension ) ||
-				Q_stricmp( 
-					d->d_name + strlen( d->d_name ) - strlen( extension ),
-					extension ) ) {
-				continue; // didn't match
+		if ( *extension ) {
+			if ( hasPatterns ) {
+				x = strrchr( d->d_name, '.' );
+				if ( !x || !Com_FilterExt( extension, x+1 ) ) {
+					continue;
+				}
+			} else {
+				length = (int) strlen( d->d_name );
+				if ( length < extLen || Q_stricmp( d->d_name + length - extLen, extension ) ) {
+					continue;
+				}
 			}
 		}
-
-		if ( nfiles == MAX_FOUND_FILES - 1 )
-			break;
 		list[ nfiles ] = FS_CopyString( d->d_name );
 		nfiles++;
 	}
 
 	list[ nfiles ] = NULL;
 
-	closedir(fdir);
+	closedir( fdir );
 
 	// return a copy of the list
 	*numfiles = nfiles;
@@ -312,16 +325,23 @@ char **Sys_ListFiles( const char *directory, const char *extension, const char *
 		return NULL;
 	}
 
-	listCopy = Z_Malloc( ( nfiles + 1 ) * sizeof( *listCopy ) );
+	listCopy = Z_Malloc( ( nfiles + 1 ) * sizeof( listCopy[0] ) );
 	for ( i = 0 ; i < nfiles ; i++ ) {
 		listCopy[i] = list[i];
 	}
 	listCopy[i] = NULL;
 
+	Com_SortFileList( listCopy, nfiles, extension[0] != '\0' );
+
 	return listCopy;
 }
 
 
+/*
+=================
+Sys_FreeFileList
+=================
+*/
 void Sys_FreeFileList( char **list ) {
 	int		i;
 
@@ -334,6 +354,25 @@ void Sys_FreeFileList( char **list ) {
 	}
 
 	Z_Free( list );
+}
+
+
+/*
+=============
+Sys_GetFileStats
+=============
+*/
+qboolean Sys_GetFileStats( const char *filename, fileOffset_t *size, fileTime_t *mtime, fileTime_t *ctime ) {
+	struct stat s;
+
+	if ( stat( filename, &s ) == 0 ) {
+		*size = (fileOffset_t)s.st_size;
+		*mtime = (fileTime_t)s.st_mtime;
+		*ctime = (fileTime_t)s.st_ctime;
+		return qtrue;
+	} else {
+		return qfalse;
+	}
 }
 
 

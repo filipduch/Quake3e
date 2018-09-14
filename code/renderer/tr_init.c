@@ -152,7 +152,7 @@ cvar_t	*r_lodCurveError;
 
 cvar_t	*r_overBrightBits;
 cvar_t	*r_mapOverBrightBits;
-cvar_t	*r_mapGrayScale;
+cvar_t	*r_mapGreyScale;
 
 cvar_t	*r_debugSurface;
 cvar_t	*r_simpleMipMaps;
@@ -190,7 +190,7 @@ static char gl_extensions[ 32768 ];
 
 // for modular renderer
 #if 0
-void QDECL Com_Error( errorParm_t code, const char *fmt, ... ) 
+void QDECL Com_Error( errorParm_t code, const char *fmt, ... )
 {
 	char buf[ 4096 ];
 	va_list	argptr;
@@ -200,7 +200,7 @@ void QDECL Com_Error( errorParm_t code, const char *fmt, ... )
 	ri.Error( code, "%s", buf );
 }
 
-void QDECL Com_Printf( const char *fmt, ... ) 
+void QDECL Com_Printf( const char *fmt, ... )
 {
 	char buf[ MAXPRINTMSG ];
 	va_list	argptr;
@@ -390,27 +390,24 @@ static void R_InitExtensions( void )
 		ri.Printf( PRINT_ALL, "...GL_EXT_texture_filter_anisotropic not found\n" );
 	}
 
+#define GLE( ret, name, ... ) q##name = ri.GL_GetProcAddress( XSTRING( name ) ); if ( !q##name ) ri.Error( ERR_FATAL, "Error resolving %s", XSTRING( name ) );
 	if ( R_HaveExtension( "GL_ARB_vertex_program" ) && R_HaveExtension( "GL_ARB_fragment_program" ) ) {
-#define GLE( ret, name, ... ) q##name = ri.GL_GetProcAddress( XSTRING( name ) );
 		QGL_ARB_PROGRAM_PROCS;
-#undef GLE
 		ri.Printf( PRINT_ALL, "...using ARB vertex/fragment programs\n" );
 	}
 
 	if ( R_HaveExtension( "ARB_vertex_buffer_object" ) && qglActiveTextureARB ) {
-#define GLE( ret, name, ... ) q##name = ri.GL_GetProcAddress( XSTRING( name ) ); // if ( !q##name ) ri.Error( ERR_FATAL, "Error resolving VBO functions" );
 		QGL_VBO_PROCS;
-#undef GLE
 		ri.Printf( PRINT_ALL, "...using ARB vertex buffer objects\n" );
 	}
 
 	if ( R_HaveExtension( "GL_EXT_framebuffer_object" ) && R_HaveExtension( "GL_EXT_framebuffer_blit" ) ) {
-#define GLE( ret, name, ... ) q##name = ri.GL_GetProcAddress( XSTRING( name ) );
 		QGL_FBO_PROCS;
-		QGL_FBO_OPT_PROCS;
 #undef GLE
+#define GLE( ret, name, ... ) q##name = ri.GL_GetProcAddress( XSTRING( name ) );
+		QGL_FBO_OPT_PROCS;
 	}
-
+#undef GLE
 }
 
 
@@ -1265,10 +1262,10 @@ static void R_Register( void )
 	// latched and archived variables
 	//
 	r_allowExtensions = ri.Cvar_Get( "r_allowExtensions", "1", CVAR_ARCHIVE_ND | CVAR_LATCH );
-	r_ext_compressed_textures = ri.Cvar_Get( "r_ext_compressed_textures", "0", CVAR_ARCHIVE_ND | CVAR_LATCH );
-	r_ext_multitexture = ri.Cvar_Get( "r_ext_multitexture", "1", CVAR_ARCHIVE_ND | CVAR_LATCH );
-	r_ext_compiled_vertex_array = ri.Cvar_Get( "r_ext_compiled_vertex_array", "1", CVAR_ARCHIVE_ND | CVAR_LATCH );
-	r_ext_texture_env_add = ri.Cvar_Get( "r_ext_texture_env_add", "1", CVAR_ARCHIVE_ND | CVAR_LATCH );
+	r_ext_compressed_textures = ri.Cvar_Get( "r_ext_compressed_textures", "0", CVAR_ARCHIVE_ND | CVAR_LATCH | CVAR_DEVELOPER );
+	r_ext_multitexture = ri.Cvar_Get( "r_ext_multitexture", "1", CVAR_ARCHIVE_ND | CVAR_LATCH | CVAR_DEVELOPER );
+	r_ext_compiled_vertex_array = ri.Cvar_Get( "r_ext_compiled_vertex_array", "1", CVAR_ARCHIVE_ND | CVAR_LATCH | CVAR_DEVELOPER );
+	r_ext_texture_env_add = ri.Cvar_Get( "r_ext_texture_env_add", "1", CVAR_ARCHIVE_ND | CVAR_LATCH | CVAR_DEVELOPER );
 
 	r_ext_texture_filter_anisotropic = ri.Cvar_Get( "r_ext_texture_filter_anisotropic",
 			"0", CVAR_ARCHIVE_ND | CVAR_LATCH );
@@ -1304,8 +1301,8 @@ static void R_Register( void )
 	r_greyscale = ri.Cvar_Get( "r_greyscale", "0", CVAR_ARCHIVE_ND );
 	ri.Cvar_CheckRange( r_greyscale, "-1", "1", CV_FLOAT );
 	ri.Cvar_SetGroup( r_greyscale, CVG_RENDERER );
-	r_mapGrayScale = ri.Cvar_Get( "r_mapGrayScale", "0", CVAR_ARCHIVE_ND | CVAR_LATCH );
-	ri.Cvar_CheckRange( r_mapGrayScale, "0", "1", CV_FLOAT );
+	r_mapGreyScale = ri.Cvar_Get( "r_mapGreyScale", "0", CVAR_ARCHIVE_ND | CVAR_LATCH );
+	ri.Cvar_CheckRange( r_mapGreyScale, "-1", "1", CV_FLOAT );
 
 	//
 	// temporary latched variables that can only change over a restart
@@ -1401,7 +1398,7 @@ static void R_Register( void )
 	r_railCoreWidth = ri.Cvar_Get( "r_railCoreWidth", "6", CVAR_ARCHIVE_ND );
 	r_railSegmentLength = ri.Cvar_Get( "r_railSegmentLength", "32", CVAR_ARCHIVE_ND );
 
-	r_primitives = ri.Cvar_Get( "r_primitives", "0", CVAR_ARCHIVE_ND );
+	r_primitives = ri.Cvar_Get( "r_primitives", "0", CVAR_ARCHIVE_ND | CVAR_DEVELOPER );
 
 	r_ambientScale = ri.Cvar_Get( "r_ambientScale", "0.6", CVAR_CHEAT );
 	r_directedScale = ri.Cvar_Get( "r_directedScale", "1", CVAR_CHEAT );

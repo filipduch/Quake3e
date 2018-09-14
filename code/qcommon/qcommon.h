@@ -23,6 +23,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #ifndef _QCOMMON_H_
 #define _QCOMMON_H_
 
+#include <sys/types.h>
 #include "../qcommon/cm_public.h"
 
 //Ignore __attribute__ on non-gcc platforms
@@ -648,7 +649,7 @@ typedef enum {
 #define	MAX_FILE_HANDLES	64
 #define	FS_INVALID_HANDLE	0
 
-#define	MAX_FOUND_FILES		0x2000
+#define	MAX_FOUND_FILES		0x5000
 
 #ifdef DEDICATED
 #define Q3CONFIG_CFG "q3config_server.cfg"
@@ -657,6 +658,9 @@ typedef enum {
 #define Q3CONFIG_CFG "q3config.cfg"
 #define CONSOLE_HISTORY_FILE "q3history"
 #endif
+
+typedef	time_t fileTime_t;
+typedef	off_t  fileOffset_t;
 
 qboolean FS_Initialized( void );
 
@@ -703,6 +707,9 @@ int		FS_FOpenFileRead( const char *qpath, fileHandle_t *file, qboolean uniqueFIL
 // It is generally safe to always set uniqueFILE to true, because the majority of
 // file IO goes through FS_ReadFile, which Does The Right Thing already.
 
+void FS_BypassPure( void );
+void FS_RestorePure( void );
+
 int FS_Home_FOpenFileRead( const char *filename, fileHandle_t *file );
 
 qboolean FS_FileIsInPAK( const char *filename, int *pChecksum, char *pakName );
@@ -726,7 +733,7 @@ void	FS_FCloseFile( fileHandle_t f );
 int		FS_ReadFile( const char *qpath, void **buffer );
 // returns the length of the file
 // a null buffer will just return the file length without loading
-// as a quick check for existance. -1 length == not present
+// as a quick check for existence. -1 length == not present
 // A 0 byte will always be appended at the end, so string ops are safe.
 // the buffer should be considered read-only, because it may be cached
 // for other uses.
@@ -909,8 +916,10 @@ qboolean	Com_CDKeyValidate( const char *key, const char *checksum );
 qboolean	Com_EarlyParseCmdLine( char *commandLine, char *con_title, int title_size, int *vid_xpos, int *vid_ypos );
 int			Com_Split( char *in, char **out, int outsz, int delim );
 
-int			Com_Filter( const char *filter, const char *name, int casesensitive );
-int			Com_FilterPath( const char *filter, const char *name, int casesensitive );
+int			Com_Filter( const char *filter, const char *name );
+qboolean	Com_FilterExt( const char *filter, const char *name );
+qboolean	Com_HasPatterns( const char *str );
+int			Com_FilterPath( const char *filter, const char *name );
 int			Com_RealTime(qtime_t *qtime);
 qboolean	Com_SafeMode( void );
 void		Com_RunAndTimeServerPacket( const netadr_t *evFrom, msg_t *buf );
@@ -971,8 +980,13 @@ extern	char	rconPassword2[ MAX_CVAR_VALUE_STRING ];
 typedef enum {
 	TAG_FREE,
 	TAG_GENERAL,
+	TAG_PACK,
+	TAG_SEARCH_PATH,
+	TAG_SEARCH_PACK,
+	TAG_SEARCH_DIR,
 	TAG_BOTLIB,
 	TAG_RENDERER,
+	TAG_CLIENTS,
 	TAG_SMALL,
 	TAG_STATIC,
 	TAG_COUNT
@@ -1224,6 +1238,8 @@ const char *Sys_SteamPath( void );
 
 char	**Sys_ListFiles( const char *directory, const char *extension, const char *filter, int *numfiles, qboolean wantsubs );
 void	Sys_FreeFileList( char **list );
+
+qboolean Sys_GetFileStats( const char *filename, fileOffset_t *size, fileTime_t *mtime, fileTime_t *ctime );
 
 void	Sys_BeginProfiling( void );
 void	Sys_EndProfiling( void );

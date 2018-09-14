@@ -771,6 +771,7 @@ void Con_DrawSolidConsole( float frac ) {
 			re.SetColor( conColorValue );
 			re.DrawStretchPic( 0, 0, wf, yf, 0, 0, 1, 1, cls.whiteShader );
 		} else {
+			re.SetColor( g_color_table[ ColorIndex( COLOR_WHITE ) ] );
 			re.DrawStretchPic( 0, 0, wf, yf, 0, 0, 1, 1, cls.consoleShader );
 		}
 
@@ -920,7 +921,7 @@ void Con_RunConsole( void )
 void Con_PageUp( int lines )
 {
 	if ( lines == 0 )
-		lines = con.vispage - 1;
+		lines = con.vispage - 2;
 
 	con.display -= lines;
 	
@@ -930,9 +931,9 @@ void Con_PageUp( int lines )
 
 void Con_PageDown( int lines )
 {
-	if ( lines == 0 ) {
-		lines = con.vispage - 1;
-	}
+	if ( lines == 0 )
+		lines = con.vispage - 2;
+
 	con.display += lines;
 
 	Con_Fixup();

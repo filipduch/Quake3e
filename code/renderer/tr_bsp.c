@@ -119,16 +119,17 @@ static void R_ColorShiftLightingBytes( const byte in[4], byte out[4] ) {
 		b = b * 255 / max;
 	}
 
-	if ( r_mapGrayScale->integer ) {
-		byte luma = LUMA( r, g, b );
+	if ( r_mapGreyScale->integer ) {
+		const byte luma = LUMA( r, g, b );
 		out[0] = luma;
 		out[1] = luma;
 		out[2] = luma;
-	} else if( r_mapGrayScale->value ) {
-		float luma = LUMA( r, g, b );
-		out[0] = LERP( r, luma, r_mapGrayScale->value );
-		out[1] = LERP( g, luma, r_mapGrayScale->value );
-		out[2] = LERP( b, luma, r_mapGrayScale->value );
+	} else if( r_mapGreyScale->value ) {
+		const float scale = fabs( r_mapGreyScale->value );
+		const float luma = LUMA( r, g, b );
+		out[0] = LERP( r, luma, scale );
+		out[1] = LERP( g, luma, scale );
+		out[2] = LERP( b, luma, scale );
 	} else {
 		out[0] = r;
 		out[1] = g;
@@ -1769,7 +1770,7 @@ static void R_LoadNodesAndLeafs( const lump_t *nodeLump, const lump_t *leafLump 
 		out->nummarksurfaces = LittleLong(inLeaf->numLeafSurfaces);
 	}	
 
-	// chain decendants
+	// chain descendants
 	R_SetParent (s_worldData.nodes, NULL);
 }
 

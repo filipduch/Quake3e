@@ -774,7 +774,9 @@ static int CL_WalkDemoExt( const char *arg, char *name, fileHandle_t *handle )
 	while ( demo_protocols[ i ] )
 	{
 		Com_sprintf( name, MAX_OSPATH, "demos/%s.dm_%d", arg, demo_protocols[ i ] );
+		FS_BypassPure();
 		FS_FOpenFileRead( name, handle, qtrue );
+		FS_RestorePure();
 		if ( *handle != FS_INVALID_HANDLE )
 		{
 			Com_Printf( "Demo file: %s\n", name );
@@ -846,7 +848,7 @@ static void CL_PlayDemo_f( void ) {
 	}
 
 	// open the demo file
-	arg = Cmd_Argv(1);
+	arg = Cmd_Argv( 1 );
 
 	// check for an extension .dm_?? (?? is protocol)
 	// check for an extension .DEMOEXT_?? (?? is protocol)
@@ -864,7 +866,9 @@ static void CL_PlayDemo_f( void ) {
 		if ( demo_protocols[ i ] /* || protocol == com_protocol->integer  || protocol == com_legacyprotocol->integer */ )
 		{
 			Com_sprintf(name, sizeof(name), "demos/%s", arg);
+			FS_BypassPure();
 			FS_FOpenFileRead( name, &hFile, qtrue );
+			FS_RestorePure();
 		}
 		else
 		{
@@ -2250,7 +2254,7 @@ void CL_InitDownloads( void ) {
 		info = cl.gameState.stringData + cl.gameState.stringOffsets[ CS_SERVERINFO ];
 		mapname = Info_ValueForKey( info, "mapname" );
 		bsp = va( "maps/%s.bsp", mapname );
-		if ( !FS_FileIsInPAK( bsp, NULL, NULL ) && FS_FOpenFileRead( bsp, NULL, qfalse ) == -1 )
+		if ( !FS_FileIsInPAK( bsp, NULL, NULL ) )
 		{
 			if ( CL_Download( "dlmap", mapname, qtrue ) )
 			{
@@ -4000,7 +4004,11 @@ static void CL_ServerInfoPacket( const netadr_t *from, msg_t *msg ) {
 		{
 			// calc ping time
 			cl_pinglist[i].time = Sys_Milliseconds() - cl_pinglist[i].start;
-			if ( com_developer->integer ) 
+			if ( cl_pinglist[i].time < 1 )
+			{
+				cl_pinglist[i].time = 1;
+			}
+			if ( com_developer->integer )
 			{
 				Com_Printf( "ping time %dms from %s\n", cl_pinglist[i].time, NET_AdrToString( from ) );
 			}
@@ -4821,8 +4829,10 @@ qboolean CL_Download( const char *cmd, const char *pakname, qboolean autoDownloa
 	{
 		Q_strncpyz( name, pakname, sizeof( name ) );
 		FS_StripExt( name, ".pk3" );
+		if ( !name[0] )
+			return qfalse;
 		s = va( "maps/%s.bsp", name );
-		if ( FS_FileIsInPAK( s, NULL, url ) ) 
+		if ( FS_FileIsInPAK( s, NULL, url ) )
 		{
 			Com_Printf( S_COLOR_YELLOW " map %s already exists in %s.pk3\n", name, url );
 			return qfalse;

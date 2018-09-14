@@ -897,7 +897,8 @@ funcOffset[FUNC_SYSC] = compiledOfs;
 	// vm->programStack = programStack - 4;
 	EmitString( "48 BA" );					// mov rdx, &vm->programStack
 	EmitPtr( &vm->programStack );
-	EmitString( "8D 46 FC" );				// lea eax, [esi-4]
+	//EmitString( "8D 46 FC" );				// lea eax, [esi-4]
+	EmitString( "8D 46 F8" );				// lea eax, [esi-8]
 	EmitString( "89 02" );					// mov [rdx], eax
 	//EmitString( "89 32" );				// mov dword ptr [rdx], esi
 
@@ -1092,6 +1093,19 @@ static void EmitNCPYFunc( vm_t *vm )
 	EmitString( "8B 7D 08" );	// mov edi, dword ptr [ebp+08] // destination
 	EmitRexString( "01 DA" );	// add edx, ebx // + vm->dataBase
 
+#if 0
+	if ( vm->forceDataMask )
+	{
+#ifdef idx64
+		EmitString( "44 21 CF" );	// and edi, r9d
+#else
+		EmitString( "81 E7" );		// and edi, vm->dataMask
+		Emit4( vm->dataMask );
+#endif
+		EmitRexString( "01 DF" );	// add edi, ebx // + vm->dataBase
+	}
+	else
+#endif
 	if ( vm_rtChecks->integer & 8 ) // security checks
 	{
 		EmitString( "89 F8" );		// mov eax, edi
@@ -1792,7 +1806,7 @@ qboolean VM_Compile( vm_t *vm, vmHeader_t *header ) {
 	inst = (instruction_t*)Z_Malloc( (header->instructionCount + 8 ) * sizeof( instruction_t ) );
 	instructionOffsets = (int*)Z_Malloc( header->instructionCount * sizeof( int ) );
 
-	errMsg = VM_LoadInstructions( header, inst );
+	errMsg = VM_LoadInstructions( (byte *) header + header->codeOffset, header->codeLength, header->instructionCount, inst );
 	if ( !errMsg ) {
 		errMsg = VM_CheckInstructions( inst, vm->instructionCount, vm->jumpTableTargets, vm->numJumpTableTargets, vm->exactDataLength );
 	}
